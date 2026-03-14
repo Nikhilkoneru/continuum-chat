@@ -1,0 +1,14 @@
+{
+  "name": "github-personal-assistant",
+  "private": true,
+  "packageManager": "pnpm@10.26.1",
+  "scripts": {
+    "dev:client": "pnpm --filter client start",
+    "dev:client:web": "pnpm --filter client web",
+    "dev:android": "pnpm --filter client android",
+    "dev:api": "pnpm --filter api dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint"
+  }
+}

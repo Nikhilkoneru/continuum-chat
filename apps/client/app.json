@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Github Personal Assistant",
+    "slug": "github-personal-assistant",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "githubpersonalassistant",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.githubpersonalassistant.app",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.githubpersonalassistant.app"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
