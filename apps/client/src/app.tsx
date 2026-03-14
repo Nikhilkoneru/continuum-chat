@@ -208,7 +208,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [creatingProject, setCreatingProject] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
-  const [streamingChatId, setStreamingChatId] = useState<string | null>(null);
+  const [streamingChatIds, setStreamingChatIds] = useState<Set<string>>(new Set());
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [connectionSettingsVisible, setConnectionSettingsVisible] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -229,6 +229,7 @@ export default function App() {
   const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>({});
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   const defaultModel = models[0]?.id ?? 'gpt-5-mini';
   const suggestedApiUrl = health?.tailscaleApiUrl ?? health?.publicApiUrl ?? health?.apiOrigin ?? null;
@@ -798,7 +799,7 @@ export default function App() {
   );
 
   const handleSend = useCallback(async () => {
-    if (!session || !selectedChat || !draft.trim() || streamingChatId) {
+    if (!session || !selectedChat || !draft.trim() || streamingChatIds.has(selectedChat.id)) {
       return;
     }
 
@@ -855,7 +856,7 @@ export default function App() {
 
     setDraft('');
     setError(null);
-    setStreamingChatId(chatId);
+    setStreamingChatIds((prev) => new Set(prev).add(chatId));
     updateChat(chatId, (chat) => ({
       ...chat,
       title: chat.title === 'New chat' ? summarizeTitle(prompt) : chat.title,
@@ -1050,22 +1051,22 @@ export default function App() {
         clearTimeout(flushTimer);
       }
       flushPendingDelta();
-      setStreamingChatId(null);
+      setStreamingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
     }
-  }, [defaultModel, draft, loadThreadDetail, selectedChat, session, signOut, streamingChatId, updateChat]);
+  }, [defaultModel, draft, loadThreadDetail, selectedChat, session, signOut, streamingChatIds, updateChat]);
 
   const handleAbortStreaming = useCallback(async () => {
-    if (!session || !streamingChatId) {
+    if (!session || !selectedChat || !streamingChatIds.has(selectedChat.id)) {
       return;
     }
 
     setError(null);
     try {
-      await abortChat({ threadId: streamingChatId }, session.sessionToken);
+      await abortChat({ threadId: selectedChat.id }, session.sessionToken);
     } catch (abortError) {
       setError(abortError instanceof Error ? abortError.message : 'Unable to stop the current response.');
     }
-  }, [session, streamingChatId]);
+  }, [selectedChat, session, streamingChatIds]);
 
   const connectionModal = connectionSettingsVisible ? (
     <div className="modal-backdrop" onClick={() => setConnectionSettingsVisible(false)}>
@@ -1093,7 +1094,29 @@ export default function App() {
     copilotPreferences.approvalMode === 'approve-all'
       ? 'Shell, write, and other Copilot tool requests run without extra blocking.'
       : 'Read-style tools stay available, while shell and write actions are denied by default.';
-  const isSelectedChatStreaming = selectedChat?.id === streamingChatId;
+  const isSelectedChatStreaming = Boolean(selectedChat && streamingChatIds.has(selectedChat.id));
+
+  // Auto-grow composer textarea
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+  }, [draft]);
+
+  const handleComposerKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        if (isSelectedChatStreaming) {
+          void handleAbortStreaming();
+        } else if (draft.trim() && !isSelectedChatStreaming) {
+          void handleSend();
+        }
+      }
+    },
+    [draft, handleAbortStreaming, handleSend, isSelectedChatStreaming],
+  );
 
   const settingsModal = settingsVisible ? (
     <div className="modal-backdrop" onClick={() => setSettingsVisible(false)}>
@@ -1198,89 +1221,84 @@ export default function App() {
           </div>
 
           <div className="sidebar-header">
-            <h1>Github Personal Assistant</h1>
+            <h1>Assistant</h1>
+            <div className="sidebar-header-actions">
+              <IconButton label="Start new chat" onClick={() => void handleCreateChat()}>
+                <PlusIcon />
+              </IconButton>
+              <IconButton label="Open settings" onClick={() => setSettingsVisible(true)}>
+                <SettingsIcon />
+              </IconButton>
+            </div>
           </div>
 
           <div className="sidebar-scroll">
-            <section className="section-card workspace-card">
-              <div className="section-header">
-                <h2 className="section-title">Workspace</h2>
-                <div className="section-header-actions">
-                  <span className="chip">{orderedChats.length} chats</span>
-                  <IconButton label="Start new chat" onClick={() => void handleCreateChat()}>
-                    <PlusIcon />
-                  </IconButton>
-                </div>
-              </div>
-              <div
-                className={`workspace-create ${dragOverGroupId === 'new-project' ? 'drag-over' : ''}`}
-                onDragOver={(event) => handleWorkspaceDragOver(event, 'new-project')}
-                onDragLeave={() => setDragOverGroupId((current) => (current === 'new-project' ? null : current))}
-                onDrop={(event) => void handleCreateProjectDrop(event)}
+            <div
+              className={`sidebar-create${draggedChatId ? ' visible' : ''}${dragOverGroupId === 'new-project' ? ' drag-over' : ''}`}
+              onDragOver={(event) => handleWorkspaceDragOver(event, 'new-project')}
+              onDragLeave={() => setDragOverGroupId((current) => (current === 'new-project' ? null : current))}
+              onDrop={(event) => void handleCreateProjectDrop(event)}
+            >
+              <input
+                className="sidebar-create-input"
+                placeholder="New project…"
+                value={newProjectName}
+                onChange={(event) => setNewProjectName(event.target.value)}
+              />
+              <button
+                className="sidebar-create-btn"
+                disabled={creatingProject || !newProjectName.trim()}
+                onClick={() => void handleCreateProject()}
               >
-                <input
-                  className="input"
-                  placeholder={draggedChatId ? 'Name a project and drop chat here' : 'Create a project'}
-                  value={newProjectName}
-                  onChange={(event) => setNewProjectName(event.target.value)}
-                />
-                <button className="ghost-button" disabled={creatingProject || !newProjectName.trim()} onClick={() => void handleCreateProject()}>
-                  {creatingProject ? 'Creating...' : draggedChatId ? 'Create & move' : 'Add project'}
-                </button>
+                {creatingProject ? '…' : 'Add'}
+              </button>
+            </div>
+
+            {workspaceGroups.map((group) => (
+              <div
+                key={group.id ?? 'inbox'}
+                className={`sidebar-group${dragOverGroupId === (group.id ?? 'inbox') ? ' drag-over' : ''}`}
+                onDragOver={(event) => handleWorkspaceDragOver(event, group.id ?? 'inbox')}
+                onDragLeave={() => setDragOverGroupId((current) => (current === (group.id ?? 'inbox') ? null : current))}
+                onDrop={(event) => void handleWorkspaceDrop(event, group.id)}
+              >
+                <div className="sidebar-group-head">
+                  <span className="sidebar-group-label">{group.label}</span>
+                  <span className="sidebar-group-count">{group.chats.length}</span>
+                  {!group.isInbox ? (
+                    <button className="sidebar-group-new" onClick={() => void handleCreateChat(group.id)}>+</button>
+                  ) : null}
+                </div>
+                {group.chats.length === 0 ? (
+                  <div className="sidebar-group-empty">{draggedChatId ? 'Drop here' : 'No chats'}</div>
+                ) : (
+                  group.chats.map((chat) => (
+                    <button
+                      key={chat.id}
+                      className={`sidebar-item${chat.id === selectedChat?.id ? ' active' : ''}${streamingChatIds.has(chat.id) ? ' streaming' : ''}`}
+                      onClick={() => void handleSelectChat(chat.id)}
+                      draggable
+                      onDragStart={() => handleChatDragStart(chat.id)}
+                      onDragEnd={handleChatDragEnd}
+                      disabled={movingChatId === chat.id}
+                    >
+                      <span className="sidebar-item-title">
+                        {streamingChatIds.has(chat.id) ? <span className="sidebar-item-pulse" /> : null}
+                        {chat.title}
+                      </span>
+                      <span className="sidebar-item-preview">{chat.lastMessagePreview ?? 'New conversation'}</span>
+                    </button>
+                  ))
+                )}
               </div>
-              <div className="workspace-groups">
-                {workspaceGroups.map((group) => (
-                  <div
-                    key={group.id ?? 'inbox'}
-                    className={`workspace-group ${dragOverGroupId === (group.id ?? 'inbox') ? 'drag-over' : ''}`}
-                    onDragOver={(event) => handleWorkspaceDragOver(event, group.id ?? 'inbox')}
-                    onDragLeave={() => setDragOverGroupId((current) => (current === (group.id ?? 'inbox') ? null : current))}
-                    onDrop={(event) => void handleWorkspaceDrop(event, group.id)}
-                  >
-                    <div className="workspace-group-header">
-                      <div className="workspace-group-copy">
-                        <div className="workspace-group-title">{group.label}</div>
-                        <div className="workspace-group-meta">
-                          {group.chats.length === 0 ? 'Drop chats here' : `${group.chats.length} chat${group.chats.length === 1 ? '' : 's'}`}
-                        </div>
-                      </div>
-                      {!group.isInbox ? (
-                        <button className="text-button" onClick={() => void handleCreateChat(group.id)}>
-                          New
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="sidebar-list workspace-chat-list">
-                      {group.chats.length === 0 ? (
-                        <div className="workspace-empty">No chats yet.</div>
-                      ) : (
-                        group.chats.map((chat) => (
-                          <button
-                            key={chat.id}
-                            className={`chat-row ${chat.id === selectedChat?.id ? 'active' : ''}`}
-                            onClick={() => void handleSelectChat(chat.id)}
-                            draggable
-                            onDragStart={() => handleChatDragStart(chat.id)}
-                            onDragEnd={handleChatDragEnd}
-                            disabled={movingChatId === chat.id}
-                          >
-                            <span className="chat-title">{chat.title}</span>
-                            <span className="chat-meta">{chat.lastMessagePreview ?? 'No messages yet'}</span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
+            ))}
           </div>
         </aside>
 
         <main className="main-panel">
           <header className="main-header">
             <div className="main-header-leading">
-              <IconButton label="Open chats and projects" onClick={() => setSidebarOpen(true)} className="mobile-menu-trigger">
+              <IconButton label="Open sidebar" onClick={() => setSidebarOpen(true)} className="mobile-menu-trigger">
                 <MenuIcon />
               </IconButton>
               <div className="header-copy">
@@ -1296,10 +1314,7 @@ export default function App() {
                   className="select header-model-select"
                   value={activeModelId}
                   onChange={(event) => {
-                    if (!selectedChat) {
-                      return;
-                    }
-
+                    if (!selectedChat) return;
                     const nextModelId = event.target.value;
                     const nextModel = models.find((model) => model.id === nextModelId);
                     const nextReasoningEffort =
@@ -1308,11 +1323,7 @@ export default function App() {
                           ? selectedChat.reasoningEffort
                           : nextModel.defaultReasoningEffort ?? nextModel.supportedReasoningEfforts?.[0] ?? null
                         : null;
-
-                    void handleThreadConfigChange(selectedChat.id, {
-                      model: nextModelId,
-                      reasoningEffort: nextReasoningEffort,
-                    });
+                    void handleThreadConfigChange(selectedChat.id, { model: nextModelId, reasoningEffort: nextReasoningEffort });
                   }}
                   disabled={!selectedChat || !models.length || savingThreadConfigId === selectedChat?.id}
                 >
@@ -1334,9 +1345,7 @@ export default function App() {
                     disabled={!selectedReasoningEfforts.length || savingThreadConfigId === selectedChat.id}
                   >
                     {selectedReasoningEfforts.map((effort) => (
-                      <option key={effort} value={effort}>
-                        {effort}
-                      </option>
+                      <option key={effort} value={effort}>{effort}</option>
                     ))}
                   </select>
                 </label>
@@ -1344,22 +1353,29 @@ export default function App() {
               <IconButton label="Start new chat" onClick={() => void handleCreateChat()}>
                 <PlusIcon />
               </IconButton>
-              <IconButton label="Open settings" onClick={() => setSettingsVisible(true)}>
-                <SettingsIcon />
-              </IconButton>
             </div>
           </header>
 
           <div className="message-scroll" ref={messagesRef}>
             {!isOnline ? <div className="top-banner offline">You are offline. The app shell is cached, but your daemon must be reachable to sign in and chat.</div> : null}
             {loading ? (
-              <div className="empty-state"><div><h2>Loading assistant…</h2><p>Restoring projects, threads, and daemon health.</p></div></div>
+              <div className="empty-state"><div><h2>Loading…</h2><p>Restoring your threads and daemon health.</p></div></div>
             ) : selectedChat?.messages.length ? (
               <div className="message-list">
-                {selectedChat.messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+                {selectedChat.messages.map((message, index) => (
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    isStreaming={
+                      streamingChatIds.has(selectedChat.id) &&
+                      message.role === 'assistant' &&
+                      index === selectedChat.messages.length - 1
+                    }
+                  />
+                ))}
               </div>
             ) : (
-              <div className="empty-state"><div><h2>Start the thread</h2><p>Messages persist on your daemon, so you can reconnect from any browser that knows your daemon URL.</p></div></div>
+              <div className="empty-state"><div><h2>Start the thread</h2><p>Messages persist on your daemon. Reconnect from any browser.</p></div></div>
             )}
           </div>
 
@@ -1369,16 +1385,11 @@ export default function App() {
             <input ref={fileInputRef} className="hidden-input" type="file" multiple onChange={handleFilesSelected} />
 
             {selectedChat?.draftAttachments.length ? (
-              <div className="composer-attachments">
+              <div className="composer-drafts">
                 {selectedChat.draftAttachments.map((attachment) => (
-                  <div key={attachment.id} className="draft-attachment">
-                    <div>
-                      <div className="chat-title">{attachment.name}</div>
-                      <div className="chat-meta">Thread attachment</div>
-                    </div>
-                    <div className="attachment-actions">
-                      <button className="text-button remove" onClick={() => handleRemoveAttachment(attachment.id)}>Remove</button>
-                    </div>
+                  <div key={attachment.id} className="composer-draft">
+                    <span>{attachment.name}</span>
+                    <button className="composer-draft-remove" onClick={() => handleRemoveAttachment(attachment.id)}>×</button>
                   </div>
                 ))}
               </div>
@@ -1428,42 +1439,41 @@ export default function App() {
                         )
                       }
                     >
-                      {respondingToUserInputId === selectedChat.pendingUserInputRequest.requestId ? 'Sending…' : 'Send answer'}
+                      {respondingToUserInputId === selectedChat.pendingUserInputRequest.requestId ? 'Sending…' : 'Send'}
                     </button>
                   </div>
                 ) : null}
               </div>
             ) : null}
 
-            <div className="composer-shell">
+            <div className="composer-bar">
+              <button
+                type="button"
+                className={`composer-btn${uploadingAttachment ? ' is-busy' : ''}`}
+                onClick={handleChooseFiles}
+                disabled={uploadingAttachment}
+                aria-label="Attach files"
+              >
+                <PaperclipIcon />
+              </button>
               <textarea
-                className="textarea composer-textarea"
+                ref={composerRef}
+                className="composer-input"
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                placeholder={selectedChat?.projectName ? `Ask about ${selectedChat.projectName}...` : 'Ask anything...'}
+                onKeyDown={handleComposerKeyDown}
+                placeholder={selectedChat?.projectName ? `Ask about ${selectedChat.projectName}…` : 'Message…'}
+                rows={1}
               />
-              <div className="composer-controls">
-                <div className="composer-tools">
-                  <IconButton
-                    label={uploadingAttachment ? 'Uploading files' : 'Add files'}
-                    onClick={handleChooseFiles}
-                    disabled={uploadingAttachment}
-                    className={uploadingAttachment ? 'is-busy composer-tool-button' : 'composer-tool-button'}
-                  >
-                    <PaperclipIcon />
-                  </IconButton>
-                </div>
-                <button
-                  type="button"
-                  className="composer-send-button"
-                  onClick={() => void (isSelectedChatStreaming ? handleAbortStreaming() : handleSend())}
-                  disabled={isSelectedChatStreaming ? false : Boolean(streamingChatId) || !draft.trim()}
-                  aria-label={isSelectedChatStreaming ? 'Stop response' : 'Send message'}
-                  title={isSelectedChatStreaming ? 'Stop response' : 'Send message'}
-                >
-                  {isSelectedChatStreaming ? <StopIcon /> : <SendIcon />}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="composer-send"
+                onClick={() => void (isSelectedChatStreaming ? handleAbortStreaming() : handleSend())}
+                disabled={isSelectedChatStreaming ? false : !draft.trim()}
+                aria-label={isSelectedChatStreaming ? 'Stop response' : 'Send message'}
+              >
+                {isSelectedChatStreaming ? <StopIcon /> : <SendIcon />}
+              </button>
             </div>
           </footer>
         </main>
