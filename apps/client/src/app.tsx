@@ -24,6 +24,7 @@ import {
   uploadAttachment,
 } from './lib/api.js';
 import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config.js';
+import { applyPwaUpdate, PWA_UPDATE_EVENT } from './lib/pwa-updates.js';
 import { useAuth } from './providers/auth-provider.js';
 
 type LocalChat = ThreadDetail & {
@@ -197,6 +198,8 @@ export default function App() {
   const [isStandalone, setIsStandalone] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
+  const [isUpdateReady, setIsUpdateReady] = useState(false);
+  const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -313,6 +316,22 @@ export default function App() {
     return () => {
       window.removeEventListener('online', updateOnlineStatus);
       window.removeEventListener('offline', updateOnlineStatus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const handlePwaUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<{ available?: boolean }>).detail;
+      setIsUpdateReady(Boolean(detail?.available));
+    };
+
+    window.addEventListener(PWA_UPDATE_EVENT, handlePwaUpdate as EventListener);
+    return () => {
+      window.removeEventListener(PWA_UPDATE_EVENT, handlePwaUpdate as EventListener);
     };
   }, []);
 
@@ -451,6 +470,23 @@ export default function App() {
 
     setError('Use your browser menu and choose "Install app" or "Add to Home Screen" to install this PWA.');
   }, [installPromptEvent]);
+
+  const handleApplyUpdate = useCallback(async () => {
+    setIsApplyingUpdate(true);
+    setError(null);
+
+    try {
+      const didStartUpdate = await applyPwaUpdate();
+      if (!didStartUpdate) {
+        setIsUpdateReady(false);
+        setError('The latest version is ready after a refresh. Reload this page to apply the update.');
+      }
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : 'Unable to apply the latest app update.');
+    } finally {
+      setIsApplyingUpdate(false);
+    }
+  }, []);
 
   const handleSaveConnection = useCallback(async () => {
     setSavingConnection(true);
@@ -803,6 +839,18 @@ export default function App() {
     </div>
   ) : null;
 
+  const renderUpdateBanner = () =>
+    isUpdateReady ? (
+      <div className="top-banner update-ready">
+        <div>
+          <strong>Update ready.</strong> A newer version of this app is available.
+        </div>
+        <button className="ghost-button" onClick={() => void handleApplyUpdate()} disabled={isApplyingUpdate}>
+          {isApplyingUpdate ? 'Updating...' : 'Update now'}
+        </button>
+      </div>
+    ) : null;
+
   if (isRestoring) {
     return <div className="auth-screen"><div className="auth-card"><div className="eyebrow">Loading</div><h1>Restoring your session…</h1></div></div>;
   }
@@ -838,6 +886,7 @@ export default function App() {
             ) : null}
 
             {error ? <div className="error-banner">{error}</div> : null}
+            {renderUpdateBanner()}
 
             <div className="modal-actions">
               <button className="button" onClick={handleAuthPress}>
@@ -942,6 +991,7 @@ export default function App() {
 
           <div className="message-scroll" ref={messagesRef}>
             {!isOnline ? <div className="top-banner offline">You are offline. The app shell is cached, but your daemon must be reachable to sign in and chat.</div> : null}
+            {renderUpdateBanner()}
             {loading ? (
               <div className="empty-state"><div><h2>Loading assistant…</h2><p>Restoring projects, threads, and daemon health.</p></div></div>
             ) : selectedChat?.messages.length ? (

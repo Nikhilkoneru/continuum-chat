@@ -2,13 +2,10 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './app.js';
+import { registerPwaServiceWorker } from './lib/pwa-updates.js';
 import { AuthProvider } from './providers/auth-provider.js';
 
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('./service-worker.js').catch(() => undefined);
-  });
-}
+registerPwaServiceWorker();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

@@ -481,10 +481,19 @@ button { cursor: pointer; }
   border: 1px solid rgba(96, 165, 250, 0.18);
   background: rgba(15, 23, 42, 0.5);
   padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .top-banner.offline {
   border-color: rgba(239, 68, 68, 0.24);
   background: rgba(127, 29, 29, 0.2);
+}
+.top-banner.update-ready {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(21, 128, 61, 0.16);
 }
 
 @media (max-width: 960px) {
