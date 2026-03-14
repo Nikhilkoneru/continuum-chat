@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import type { ProjectDetail, ProjectSummary } from '@github-personal-assistant/shared';
 
-import { db, nowIso } from '../db.js';
+import { db, nowIso } from '../db';
 
 type ProjectRow = {
   id: string;

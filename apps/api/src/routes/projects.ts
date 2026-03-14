@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { requireRequestSession } from '../lib/auth.js';
-import { createProject, getProject, listProjects } from '../store/project-store.js';
+import { requireRequestSession } from '../lib/auth';
+import { createProject, getProject, listProjects } from '../store/project-store';
 
 const router = Router();
 

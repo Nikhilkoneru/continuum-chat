@@ -18,9 +18,9 @@ import type {
   ThreadSummary,
 } from '@github-personal-assistant/shared';
 
-import { env, canUseCopilot } from '../config.js';
-import type { ThreadAttachmentReference } from '../store/attachment-store.js';
-import { listThreadAttachmentReferences } from '../store/attachment-store.js';
+import { env, canUseCopilot } from '../config';
+import type { ThreadAttachmentReference } from '../store/attachment-store';
+import { listThreadAttachmentReferences } from '../store/attachment-store';
 
 type CopilotSdkModule = typeof import('@github/copilot-sdk');
 type SessionEvent = Awaited<ReturnType<CopilotSession['getMessages']>>[number];
@@ -38,7 +38,10 @@ let sdkModulePromise: Promise<CopilotSdkModule> | null = null;
 const makeKey = (githubToken?: string) => (githubToken ? `user:${githubToken.slice(-12)}` : 'service');
 
 const loadSdkModule = () => {
-  sdkModulePromise ??= import('@github/copilot-sdk');
+  // Use Function constructor to preserve dynamic import() in CJS output —
+  // TypeScript's CJS transform converts import() to require() which breaks
+  // ESM-only packages like @github/copilot-sdk.
+  sdkModulePromise ??= new Function('return import("@github/copilot-sdk")')() as Promise<CopilotSdkModule>;
   return sdkModulePromise;
 };
 

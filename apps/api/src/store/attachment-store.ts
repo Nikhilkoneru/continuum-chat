@@ -5,13 +5,13 @@ import path from 'node:path';
 
 import type { AttachmentKind, AttachmentSummary } from '@github-personal-assistant/shared';
 
-import { env } from '../config.js';
-import { db, nowIso } from '../db.js';
+import { env } from '../config';
+import { db, nowIso } from '../db';
 import {
   extractPdfDocumentContext,
   formatPdfContextForPrompt,
   type PdfDocumentContext,
-} from '../services/pdf.js';
+} from '../services/pdf';
 
 type AttachmentRow = {
   id: string;

@@ -1,8 +1,8 @@
 import multer from 'multer';
 import { Router } from 'express';
 
-import { requireRequestSession } from '../lib/auth.js';
-import { saveAttachment } from '../store/attachment-store.js';
+import { requireRequestSession } from '../lib/auth';
+import { saveAttachment } from '../store/attachment-store';
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
-import { env } from '../config.js';
-import { getAppSession } from '../store/auth-store.js';
+import { env } from '../config';
+import { getAppSession } from '../store/auth-store';
 
 const extractBearerToken = (request: Request) => {
   const header = request.headers.authorization;
