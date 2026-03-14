@@ -85,8 +85,8 @@ const buildAuthCapabilities = (): AuthCapabilities => {
   const signIn =
     env.appAuthMode === 'local'
       ? {
-          label: 'Continue to local daemon',
-          description: 'This daemon is configured for trusted local access and can create a session automatically.',
+          label: 'Continue to chats',
+          description: 'This browser can reconnect directly to your daemon and reuse a local session on this device.',
           automatic: true,
           localBootstrap: true,
           deviceFlow: false,

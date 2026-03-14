@@ -206,6 +206,20 @@ export default function App() {
           : 'Negotiating';
   const authDescription =
     authCapabilities?.signIn.description ?? 'Connect this client to your personal assistant daemon and keep the full chat history on your own machine.';
+  const authEyebrow =
+    authCapabilities?.mode === 'local'
+      ? 'Your daemon'
+      : authCapabilities?.mode === 'github-device' || authCapabilities?.mode === 'github-oauth'
+        ? 'Secure access'
+        : 'Github Personal Assistant';
+  const authHeading =
+    authCapabilities?.mode === 'local'
+      ? 'Continue to your chats.'
+      : 'Bring your own daemon, keep your own history.';
+  const authSupportingCopy =
+    authCapabilities?.mode === 'local'
+      ? 'Projects, threads, and attachments stay on your daemon. This browser can reconnect without a GitHub sign-in screen.'
+      : authDescription;
 
   useEffect(() => {
     if (!session) {
@@ -786,9 +800,9 @@ export default function App() {
       <>
         <div className="auth-screen">
           <section className="auth-card">
-            <div className="eyebrow">Github Personal Assistant</div>
-            <h1>Bring your own daemon, keep your own history.</h1>
-            <p className="muted">{authDescription}</p>
+            <div className="eyebrow">{authEyebrow}</div>
+            <h1>{authHeading}</h1>
+            <p className="muted">{authSupportingCopy}</p>
 
             <div className="status-card">
               <div className="status-grid">
