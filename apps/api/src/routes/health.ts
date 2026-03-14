@@ -7,7 +7,6 @@ import {
   getCopilotAuthMode,
   isActiveAppAuthConfigured,
   isCopilotConfigured,
-  isRagFlowConfigured,
   isRemoteAccessConfigured,
 } from '../config';
 
@@ -25,7 +24,6 @@ router.get('/api/health', (_request, response) => {
     tailscaleApiUrl: env.tailscaleApiUrl,
     remoteAccessMode: env.remoteAccessMode,
     remoteAccessConfigured: isRemoteAccessConfigured(),
-    ragflowConfigured: isRagFlowConfigured(),
   };
 
   response.json(payload);

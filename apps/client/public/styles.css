@@ -115,6 +115,76 @@ button { cursor: pointer; }
   gap: 10px;
 }
 
+.workspace-card {
+  gap: 12px;
+}
+
+.workspace-create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0;
+  border-radius: 14px;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.workspace-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workspace-group {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(9, 14, 28, 0.28);
+  border-radius: 14px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.workspace-group.drag-over,
+.workspace-create.drag-over {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(30, 41, 59, 0.48);
+}
+
+.workspace-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspace-group-copy {
+  min-width: 0;
+}
+
+.workspace-group-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.workspace-group-meta,
+.workspace-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.workspace-empty {
+  padding: 2px 2px 0;
+}
+
+.workspace-chat-list .chat-row[draggable="true"] {
+  cursor: grab;
+}
+
+.workspace-chat-list .chat-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .section-header {
   display: flex;
   align-items: center;

@@ -6,7 +6,6 @@ import type { ChatRole, ChatStreamEvent } from '@github-personal-assistant/share
 import { env } from '../config';
 import { requireRequestSession } from '../lib/auth';
 import { getOrCreateSession } from '../services/copilot';
-import { buildKnowledgePromptContext } from '../services/retrieval';
 import { buildAttachmentPromptContext, getAttachmentInputs } from '../store/attachment-store';
 import { getCopilotPreferences } from '../store/copilot-preferences-store';
 import {
@@ -19,7 +18,6 @@ import {
   updateThreadModel,
   updateThreadSession,
 } from '../store/thread-store';
-import { getProject } from '../store/project-store';
 
 const router = Router();
 const SEND_AND_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -126,7 +124,6 @@ router.post('/api/chat/stream', async (request, response) => {
     return;
   }
 
-  const project = thread.projectId ? getProject(ownerId, thread.projectId) : null;
   const sessionId = thread.copilotSessionId ?? `thread-${thread.id}`;
 
   response.setHeader('Content-Type', 'text/event-stream');
@@ -169,17 +166,8 @@ router.post('/api/chat/stream', async (request, response) => {
       return;
     }
 
-    const knowledgePromptContext = await buildKnowledgePromptContext({
-      ownerId,
-      threadId: thread.id,
-      query: parsed.data.prompt,
-    });
-
     const enrichedPrompt = [
       parsed.data.prompt,
-      knowledgePromptContext
-        ? ['Use the following project knowledge retrieved from RagFlow before answering.', knowledgePromptContext].join('\n\n')
-        : null,
       attachmentPromptContext
         ? ['Use the following locally extracted attachment context when it helps answer the latest request.', attachmentPromptContext].join('\n\n')
         : null,
@@ -198,7 +186,7 @@ router.post('/api/chat/stream', async (request, response) => {
 
     renameThreadIfPlaceholder(thread.id, summarizeTitle(parsed.data.prompt));
 
-    const model = parsed.data.model ?? thread.model ?? project?.defaultModel ?? env.defaultModel;
+    const model = parsed.data.model ?? thread.model ?? env.defaultModel;
     updateThreadModel(thread.id, model);
     updateThreadSession(thread.id, sessionId);
 
@@ -209,7 +197,6 @@ router.post('/api/chat/stream', async (request, response) => {
       threadId: thread.id,
       model,
       approvalMode: getCopilotPreferences().approvalMode,
-      systemMessage: project?.instructions,
     })) as unknown as SessionLike;
     activeSessions.set(thread.id, { session, aborted: false });
     if (pendingAborts.has(thread.id)) {

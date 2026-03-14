@@ -29,7 +29,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                         ? 'Document'
                         : 'File'}
                 {`: ${attachment.name}`}
-                {attachment.scope === 'knowledge' ? ' · project knowledge' : ''}
               </span>
             ))}
           </div>

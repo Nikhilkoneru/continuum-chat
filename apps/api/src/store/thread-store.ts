@@ -62,7 +62,7 @@ export const createThread = (ownerId: string, input: CreateThreadInput = {}) => 
 
   const now = nowIso();
   const threadId = crypto.randomUUID();
-  const model = input.model?.trim() || project?.default_model || env.defaultModel;
+  const model = input.model?.trim() || env.defaultModel;
   const title = input.title?.trim() || 'New chat';
 
   db.prepare(
@@ -153,29 +153,25 @@ export const getThreadDetail = (ownerId: string, threadId: string) => {
             `SELECT
                ma.message_id,
                a.id,
-               a.name,
-               a.mime_type,
-               a.size,
-               a.kind,
-               a.uploaded_at,
-               a.scope,
-               a.knowledge_status
-             FROM message_attachments ma
-             JOIN attachments a ON a.id = ma.attachment_id
-             WHERE ma.message_id IN (${messages.map(() => '?').join(',')})
+                a.name,
+                a.mime_type,
+                a.size,
+                a.kind,
+                a.uploaded_at
+              FROM message_attachments ma
+              JOIN attachments a ON a.id = ma.attachment_id
+              WHERE ma.message_id IN (${messages.map(() => '?').join(',')})
              ORDER BY a.uploaded_at ASC`,
           )
           .all(...messages.map((message) => message.id)) as Array<{
           message_id: string;
           id: string;
-          name: string;
-          mime_type: string;
-          size: number;
-          kind: AttachmentSummary['kind'];
-          uploaded_at: string;
-          scope: AttachmentSummary['scope'];
-          knowledge_status: AttachmentSummary['knowledgeStatus'];
-        }>)
+           name: string;
+           mime_type: string;
+           size: number;
+           kind: AttachmentSummary['kind'];
+           uploaded_at: string;
+         }>)
       : [];
 
   const attachmentsByMessage = new Map<string, AttachmentSummary[]>();
@@ -184,13 +180,11 @@ export const getThreadDetail = (ownerId: string, threadId: string) => {
     bucket.push({
       id: row.id,
       name: row.name,
-      mimeType: row.mime_type,
-      size: row.size,
-      kind: row.kind,
-      uploadedAt: row.uploaded_at,
-      scope: row.scope,
-      knowledgeStatus: row.knowledge_status,
-    });
+        mimeType: row.mime_type,
+        size: row.size,
+        kind: row.kind,
+        uploadedAt: row.uploaded_at,
+      });
     attachmentsByMessage.set(row.message_id, bucket);
   }
 
@@ -238,6 +232,35 @@ export const updateThreadSession = (threadId: string, sessionId: string) => {
 
 export const updateThreadModel = (threadId: string, model: string) => {
   db.prepare('UPDATE threads SET model = ?, updated_at = ? WHERE id = ?').run(model, nowIso(), threadId);
+};
+
+export const moveThreadToProject = (ownerId: string, threadId: string, projectId?: string | null) => {
+  const thread = getThread(ownerId, threadId);
+  if (!thread) {
+    return null;
+  }
+
+  const targetProject = projectId ? getProjectRecord(ownerId, projectId) : null;
+  if (projectId && !targetProject) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+  db.prepare('UPDATE threads SET project_id = ?, updated_at = ? WHERE id = ? AND github_user_id = ?').run(
+    targetProject?.id ?? null,
+    timestamp,
+    threadId,
+    ownerId,
+  );
+
+  if (thread.projectId) {
+    touchProject(ownerId, thread.projectId);
+  }
+  if (targetProject) {
+    touchProject(ownerId, targetProject.id);
+  }
+
+  return getThread(ownerId, threadId);
 };
 
 export const renameThreadIfPlaceholder = (threadId: string, title: string) => {

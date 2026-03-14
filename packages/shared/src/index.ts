@@ -45,7 +45,6 @@ export type ApiHealth = {
   tailscaleApiUrl?: string;
   remoteAccessMode: 'local' | 'tailscale' | 'public';
   remoteAccessConfigured: boolean;
-  ragflowConfigured: boolean;
 };
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
@@ -145,8 +144,6 @@ export type ModelOption = {
 };
 
 export type AttachmentKind = 'image' | 'document' | 'audio' | 'video' | 'other';
-export type AttachmentScope = 'thread' | 'knowledge';
-export type AttachmentKnowledgeStatus = 'none' | 'pending' | 'indexed' | 'failed';
 
 export type AttachmentSummary = {
   id: string;
@@ -155,21 +152,16 @@ export type AttachmentSummary = {
   size: number;
   kind: AttachmentKind;
   uploadedAt: string;
-  scope: AttachmentScope;
-  knowledgeStatus: AttachmentKnowledgeStatus;
 };
 
 export type ProjectSummary = {
   id: string;
   name: string;
   description: string;
-  defaultModel: string;
   updatedAt: string;
 };
 
-export type ProjectDetail = ProjectSummary & {
-  instructions: string;
-};
+export type ProjectDetail = ProjectSummary;
 
 export type ChatRole = 'user' | 'assistant' | 'system' | 'error';
 

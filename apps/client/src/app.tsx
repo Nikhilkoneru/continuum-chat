@@ -22,18 +22,24 @@ import {
   getProjects,
   getThread,
   getThreads,
-  promoteAttachmentToKnowledge,
   streamChat,
+  updateThread,
   updateCopilotPreferences,
   uploadAttachment,
 } from './lib/api.js';
 import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config.js';
-import { applyPwaUpdate, PWA_UPDATE_EVENT } from './lib/pwa-updates.js';
 import { useAuth } from './providers/auth-provider.js';
 
 type LocalChat = ThreadDetail & {
   draftAttachments: AttachmentSummary[];
   hasLoadedMessages: boolean;
+};
+
+type WorkspaceGroup = {
+  id: string | null;
+  label: string;
+  chats: LocalChat[];
+  isInbox?: boolean;
 };
 
 type BeforeInstallPromptEvent = Event & {
@@ -189,7 +195,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [creatingProject, setCreatingProject] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
-  const [promotingAttachmentId, setPromotingAttachmentId] = useState<string | null>(null);
   const [streamingChatId, setStreamingChatId] = useState<string | null>(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [connectionSettingsVisible, setConnectionSettingsVisible] = useState(false);
@@ -201,10 +206,11 @@ export default function App() {
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
-  const [isUpdateReady, setIsUpdateReady] = useState(false);
-  const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
   const [copilotPreferences, setCopilotPreferences] = useState<CopilotPreferences>({ approvalMode: 'approve-all' });
   const [savingApprovalMode, setSavingApprovalMode] = useState(false);
+  const [draggedChatId, setDraggedChatId] = useState<string | null>(null);
+  const [dragOverGroupId, setDragOverGroupId] = useState<string | 'inbox' | 'new-project' | null>(null);
+  const [movingChatId, setMovingChatId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -319,22 +325,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const handlePwaUpdate = (event: Event) => {
-      const detail = (event as CustomEvent<{ available?: boolean }>).detail;
-      setIsUpdateReady(Boolean(detail?.available));
-    };
-
-    window.addEventListener(PWA_UPDATE_EVENT, handlePwaUpdate as EventListener);
-    return () => {
-      window.removeEventListener(PWA_UPDATE_EVENT, handlePwaUpdate as EventListener);
-    };
-  }, []);
-
   const updateChat = useCallback((chatId: string, updater: (chat: LocalChat) => LocalChat) => {
     setChats((current) => current.map((chat) => (chat.id === chatId ? updater(chat) : chat)));
   }, []);
@@ -444,6 +434,22 @@ export default function App() {
 
   const selectedChat = useMemo(() => chats.find((chat) => chat.id === selectedChatId) ?? chats[0] ?? null, [chats, selectedChatId]);
   const orderedChats = useMemo(() => [...chats].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)), [chats]);
+  const workspaceGroups = useMemo<WorkspaceGroup[]>(
+    () => [
+      {
+        id: null,
+        label: 'Inbox',
+        chats: orderedChats.filter((chat) => !chat.projectId),
+        isInbox: true,
+      },
+      ...projects.map((project) => ({
+        id: project.id,
+        label: project.name,
+        chats: orderedChats.filter((chat) => chat.projectId === project.id),
+      })),
+    ],
+    [orderedChats, projects],
+  );
   const activeModelId = selectedChat?.model ?? defaultModel;
   const headerMeta = selectedChat?.projectName ? `Project: ${selectedChat.projectName}` : '';
 
@@ -469,23 +475,6 @@ export default function App() {
 
     setError('Use your browser menu and choose "Install app" or "Add to Home Screen" to install this PWA.');
   }, [installPromptEvent]);
-
-  const handleApplyUpdate = useCallback(async () => {
-    setIsApplyingUpdate(true);
-    setError(null);
-
-    try {
-      const didStartUpdate = await applyPwaUpdate();
-      if (!didStartUpdate) {
-        setIsUpdateReady(false);
-        setError('The latest version is ready after a refresh. Reload this page to apply the update.');
-      }
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : 'Unable to apply the latest app update.');
-    } finally {
-      setIsApplyingUpdate(false);
-    }
-  }, []);
 
   const handleSaveConnection = useCallback(async () => {
     setSavingConnection(true);
@@ -547,11 +536,11 @@ export default function App() {
     [session],
   );
 
-  const handleCreateChat = useCallback(async () => {
+  const handleCreateChat = useCallback(async (projectId?: string | null) => {
     if (!session) return;
     setError(null);
     try {
-      const payload = await createThread({}, session.sessionToken);
+      const payload = await createThread(projectId ? { projectId } : {}, session.sessionToken);
       upsertThreadSummary(payload.thread);
       setSelectedChatId(payload.thread.id);
       await loadThreadDetail(payload.thread.id);
@@ -562,38 +551,62 @@ export default function App() {
     }
   }, [loadThreadDetail, session, upsertThreadSummary]);
 
-  const handleStartProjectChat = useCallback(
-    async (project: ProjectSummary) => {
-      if (!session) return;
+  const handleMoveChat = useCallback(
+    async (chatId: string, projectId?: string | null) => {
+      if (!session) {
+        return;
+      }
+
+      const existingChat = chats.find((chat) => chat.id === chatId);
+      const normalizedProjectId = projectId ?? null;
+      if ((existingChat?.projectId ?? null) === normalizedProjectId) {
+        setDraggedChatId(null);
+        setDragOverGroupId(null);
+        return;
+      }
+
+      setMovingChatId(chatId);
       setError(null);
       try {
-        const payload = await createThread({ projectId: project.id, model: project.defaultModel }, session.sessionToken);
+        const payload = await updateThread(chatId, { projectId: normalizedProjectId }, session.sessionToken);
         upsertThreadSummary(payload.thread);
-        setSelectedChatId(payload.thread.id);
-        await loadThreadDetail(payload.thread.id);
-        setDraft('');
-        setSidebarOpen(false);
-      } catch (createError) {
-        setError(createError instanceof Error ? createError.message : 'Unable to create project chat.');
+        if (selectedChatId === chatId) {
+          await loadThreadDetail(chatId);
+        }
+      } catch (moveError) {
+        setError(moveError instanceof Error ? moveError.message : 'Unable to move chat.');
+      } finally {
+        setMovingChatId(null);
+        setDraggedChatId(null);
+        setDragOverGroupId(null);
       }
     },
-    [loadThreadDetail, session, upsertThreadSummary],
+    [chats, loadThreadDetail, selectedChatId, session, upsertThreadSummary],
   );
 
-  const handleCreateProject = useCallback(async () => {
+  const handleCreateProject = useCallback(async (chatIdToMove?: string | null) => {
     if (!session || !newProjectName.trim()) return;
     setCreatingProject(true);
     setError(null);
     try {
       const payload = await createProject({ name: newProjectName.trim() }, session.sessionToken);
       setProjects((current) => [payload.project, ...current]);
+      if (chatIdToMove) {
+        const moved = await updateThread(chatIdToMove, { projectId: payload.project.id }, session.sessionToken);
+        upsertThreadSummary(moved.thread);
+        if (selectedChatId === chatIdToMove) {
+          await loadThreadDetail(chatIdToMove);
+        }
+      }
       setNewProjectName('');
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Unable to create project.');
     } finally {
       setCreatingProject(false);
+      setDraggedChatId(null);
+      setDragOverGroupId(null);
     }
-  }, [newProjectName, session]);
+  }, [loadThreadDetail, newProjectName, selectedChatId, session, upsertThreadSummary]);
 
   const handleSelectChat = useCallback(
     async (chatId: string) => {
@@ -610,6 +623,51 @@ export default function App() {
       }
     },
     [chats, loadThreadDetail],
+  );
+
+  const handleChatDragStart = useCallback((chatId: string) => {
+    setDraggedChatId(chatId);
+  }, []);
+
+  const handleChatDragEnd = useCallback(() => {
+    setDraggedChatId(null);
+    setDragOverGroupId(null);
+  }, []);
+
+  const handleWorkspaceDragOver = useCallback(
+    (event: React.DragEvent, groupId: string | 'inbox' | 'new-project') => {
+      event.preventDefault();
+      if (!draggedChatId) {
+        return;
+      }
+      setDragOverGroupId(groupId);
+    },
+    [draggedChatId],
+  );
+
+  const handleWorkspaceDrop = useCallback(
+    async (event: React.DragEvent, projectId?: string | null) => {
+      event.preventDefault();
+      if (!draggedChatId) {
+        return;
+      }
+      await handleMoveChat(draggedChatId, projectId ?? null);
+    },
+    [draggedChatId, handleMoveChat],
+  );
+
+  const handleCreateProjectDrop = useCallback(
+    async (event: React.DragEvent) => {
+      event.preventDefault();
+      if (!draggedChatId || !newProjectName.trim()) {
+        if (!newProjectName.trim()) {
+          setError('Name the project before dropping a chat here.');
+        }
+        return;
+      }
+      await handleCreateProject(draggedChatId);
+    },
+    [draggedChatId, handleCreateProject, newProjectName],
   );
 
   const handleChooseFiles = useCallback(() => fileInputRef.current?.click(), []);
@@ -641,7 +699,7 @@ export default function App() {
           const payload = await uploadAttachment(
             { file, name: file.name, mimeType: file.type || 'application/octet-stream' },
             session.sessionToken,
-            { threadId: selectedChat.id, projectId: selectedChat.projectId },
+            { threadId: selectedChat.id },
           );
           uploadedAttachments.push(payload.attachment);
         }
@@ -656,26 +714,6 @@ export default function App() {
       }
     },
     [selectedChat, session, updateChat, uploadingAttachment],
-  );
-
-  const handlePromoteAttachment = useCallback(
-    async (attachmentId: string) => {
-      if (!session || !selectedChat?.projectId) return;
-      setPromotingAttachmentId(attachmentId);
-      setError(null);
-      try {
-        const payload = await promoteAttachmentToKnowledge(attachmentId, { projectId: selectedChat.projectId }, session.sessionToken);
-        updateChat(selectedChat.id, (chat) => ({
-          ...chat,
-          draftAttachments: chat.draftAttachments.map((attachment) => (attachment.id === attachmentId ? payload.attachment : attachment)),
-        }));
-      } catch (promoteError) {
-        setError(promoteError instanceof Error ? promoteError.message : 'Unable to add that file to project knowledge.');
-      } finally {
-        setPromotingAttachmentId(null);
-      }
-    },
-    [selectedChat, session, updateChat],
   );
 
   const handleRemoveAttachment = useCallback(
@@ -883,7 +921,6 @@ export default function App() {
           <div className="status-grid">
             <div className="status-item"><div className="status-label">Daemon</div><div className="status-value">{activeApiUrl}</div></div>
             <div className="status-item"><div className="status-label">Remote access</div><div className="status-value">{remoteAccessLabel}</div></div>
-            <div className="status-item"><div className="status-label">RagFlow</div><div className="status-value">{health?.ragflowConfigured ? 'Connected' : 'Not configured'}</div></div>
             <div className="status-item"><div className="status-label">Auth</div><div className="status-value">{health?.authConfigured ? activeAuthLabel : 'Not configured'}</div></div>
             <div className="status-item"><div className="status-label">Install</div><div className="status-value">{isStandalone ? 'Installed' : installPromptEvent ? 'Ready to install' : 'Browser install available'}</div></div>
             <div className="status-item"><div className="status-label">Connectivity</div><div className="status-value"><span className="status-inline"><span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />{isOnline ? 'Online' : 'Offline'}</span></div></div>
@@ -914,18 +951,6 @@ export default function App() {
       </div>
     </div>
   ) : null;
-
-  const renderUpdateBanner = () =>
-    isUpdateReady ? (
-      <div className="top-banner update-ready">
-        <div>
-          <strong>Update ready.</strong> A newer version of this app is available.
-        </div>
-        <button className="ghost-button" onClick={() => void handleApplyUpdate()} disabled={isApplyingUpdate}>
-          {isApplyingUpdate ? 'Updating...' : 'Update now'}
-        </button>
-      </div>
-    ) : null;
 
   if (isRestoring) {
     return <div className="auth-screen"><div className="auth-card"><div className="eyebrow">Loading</div><h1>Restoring your session…</h1></div></div>;
@@ -962,8 +987,6 @@ export default function App() {
             ) : null}
 
             {error ? <div className="error-banner">{error}</div> : null}
-            {renderUpdateBanner()}
-
             <div className="modal-actions">
               <button className="button" onClick={handleAuthPress}>
                 {pendingDeviceAuth && authCapabilities?.mode === 'github-device'
@@ -997,44 +1020,73 @@ export default function App() {
           </div>
 
           <div className="sidebar-scroll">
-            <section className="section-card">
+            <section className="section-card workspace-card">
               <div className="section-header">
-                <h2 className="section-title">Chats</h2>
+                <h2 className="section-title">Workspace</h2>
                 <div className="section-header-actions">
-                  <span className="chip">{orderedChats.length}</span>
+                  <span className="chip">{orderedChats.length} chats</span>
                   <IconButton label="Start new chat" onClick={() => void handleCreateChat()}>
                     <PlusIcon />
                   </IconButton>
                 </div>
               </div>
-              <div className="sidebar-list">
-                {orderedChats.map((chat) => (
-                  <button key={chat.id} className={`chat-row ${chat.id === selectedChat?.id ? 'active' : ''}`} onClick={() => void handleSelectChat(chat.id)}>
-                    <span className="chat-title">{chat.title}</span>
-                    <span className="chat-meta">{chat.projectName ?? chat.lastMessagePreview ?? 'General'}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="section-card">
-              <div className="section-header">
-                <h2 className="section-title">Projects</h2>
-                <span className="chip">{projects.length}</span>
-              </div>
-              <div className="inline-form">
-                <input className="input" placeholder="Create a project" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} />
+              <div
+                className={`workspace-create ${dragOverGroupId === 'new-project' ? 'drag-over' : ''}`}
+                onDragOver={(event) => handleWorkspaceDragOver(event, 'new-project')}
+                onDragLeave={() => setDragOverGroupId((current) => (current === 'new-project' ? null : current))}
+                onDrop={(event) => void handleCreateProjectDrop(event)}
+              >
+                <input
+                  className="input"
+                  placeholder={draggedChatId ? 'Name a project and drop chat here' : 'Create a project'}
+                  value={newProjectName}
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                />
                 <button className="ghost-button" disabled={creatingProject || !newProjectName.trim()} onClick={() => void handleCreateProject()}>
-                  {creatingProject ? 'Creating...' : 'Add project'}
+                  {creatingProject ? 'Creating...' : draggedChatId ? 'Create & move' : 'Add project'}
                 </button>
               </div>
-              <div className="project-list">
-                {projects.map((project) => (
-                  <div key={project.id} className="project-row">
-                    <div className="project-title">{project.name}</div>
-                    <div className="project-meta">Model: {project.defaultModel}</div>
-                    <div className="project-actions">
-                      <button className="text-button" onClick={() => void handleStartProjectChat(project)}>Open chat</button>
+              <div className="workspace-groups">
+                {workspaceGroups.map((group) => (
+                  <div
+                    key={group.id ?? 'inbox'}
+                    className={`workspace-group ${dragOverGroupId === (group.id ?? 'inbox') ? 'drag-over' : ''}`}
+                    onDragOver={(event) => handleWorkspaceDragOver(event, group.id ?? 'inbox')}
+                    onDragLeave={() => setDragOverGroupId((current) => (current === (group.id ?? 'inbox') ? null : current))}
+                    onDrop={(event) => void handleWorkspaceDrop(event, group.id)}
+                  >
+                    <div className="workspace-group-header">
+                      <div className="workspace-group-copy">
+                        <div className="workspace-group-title">{group.label}</div>
+                        <div className="workspace-group-meta">
+                          {group.chats.length === 0 ? 'Drop chats here' : `${group.chats.length} chat${group.chats.length === 1 ? '' : 's'}`}
+                        </div>
+                      </div>
+                      {!group.isInbox ? (
+                        <button className="text-button" onClick={() => void handleCreateChat(group.id)}>
+                          New
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="sidebar-list workspace-chat-list">
+                      {group.chats.length === 0 ? (
+                        <div className="workspace-empty">No chats yet.</div>
+                      ) : (
+                        group.chats.map((chat) => (
+                          <button
+                            key={chat.id}
+                            className={`chat-row ${chat.id === selectedChat?.id ? 'active' : ''}`}
+                            onClick={() => void handleSelectChat(chat.id)}
+                            draggable
+                            onDragStart={() => handleChatDragStart(chat.id)}
+                            onDragEnd={handleChatDragEnd}
+                            disabled={movingChatId === chat.id}
+                          >
+                            <span className="chat-title">{chat.title}</span>
+                            <span className="chat-meta">{chat.lastMessagePreview ?? 'No messages yet'}</span>
+                          </button>
+                        ))
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1083,7 +1135,6 @@ export default function App() {
 
           <div className="message-scroll" ref={messagesRef}>
             {!isOnline ? <div className="top-banner offline">You are offline. The app shell is cached, but your daemon must be reachable to sign in and chat.</div> : null}
-            {renderUpdateBanner()}
             {loading ? (
               <div className="empty-state"><div><h2>Loading assistant…</h2><p>Restoring projects, threads, and daemon health.</p></div></div>
             ) : selectedChat?.messages.length ? (
@@ -1106,24 +1157,9 @@ export default function App() {
                   <div key={attachment.id} className="draft-attachment">
                     <div>
                       <div className="chat-title">{attachment.name}</div>
-                      <div className="chat-meta">
-                        {attachment.scope === 'knowledge'
-                          ? attachment.knowledgeStatus === 'pending'
-                            ? 'Project knowledge syncing...'
-                            : attachment.knowledgeStatus === 'indexed'
-                              ? 'Project knowledge indexed'
-                              : attachment.knowledgeStatus === 'failed'
-                                ? 'Knowledge sync failed'
-                                : 'Project knowledge'
-                          : 'Thread-only attachment'}
-                      </div>
+                      <div className="chat-meta">Thread attachment</div>
                     </div>
                     <div className="attachment-actions">
-                      {selectedChat.projectId && attachment.scope !== 'knowledge' ? (
-                        <button className="text-button" onClick={() => void handlePromoteAttachment(attachment.id)}>
-                          {promotingAttachmentId === attachment.id ? 'Promoting...' : 'Add to knowledge'}
-                        </button>
-                      ) : null}
                       <button className="text-button remove" onClick={() => handleRemoveAttachment(attachment.id)}>Remove</button>
                     </div>
                   </div>

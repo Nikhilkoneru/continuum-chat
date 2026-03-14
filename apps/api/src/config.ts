@@ -101,9 +101,6 @@ export const env = {
   appSupportDir,
   databasePath: process.env.DATABASE_PATH ?? path.join(appSupportDir, 'data', 'assistant.sqlite'),
   mediaRoot: process.env.MEDIA_ROOT ?? path.join(appSupportDir, 'media'),
-  ragflowBaseUrl: process.env.RAGFLOW_BASE_URL?.trim(),
-  ragflowApiKey: process.env.RAGFLOW_API_KEY?.trim(),
-  ragflowDatasetPrefix: process.env.RAGFLOW_DATASET_PREFIX?.trim() || 'gpa',
   serviceAccessToken: process.env.SERVICE_ACCESS_TOKEN?.trim() || undefined,
 };
 
@@ -114,7 +111,6 @@ export const canUseCopilot = (githubToken?: string) =>
   Boolean(githubToken || env.copilotCliUrl || env.copilotGithubToken || env.copilotUseLoggedInUser);
 export const isDeviceOAuthConfigured = () => Boolean(env.githubClientId);
 export const isOAuthConfigured = () => Boolean(env.githubClientId && env.githubClientSecret && env.githubCallbackUrl);
-export const isRagFlowConfigured = () => Boolean(env.ragflowBaseUrl && env.ragflowApiKey);
 export const isRemoteAccessConfigured = () =>
   Boolean(
     (env.remoteAccessMode === 'tailscale' && env.tailscaleApiUrl) ||

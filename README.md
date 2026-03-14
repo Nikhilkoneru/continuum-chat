@@ -14,7 +14,7 @@ The current product model is:
 - Copilot SDK as the runtime chat engine
 - local-first storage on the Mac host
 
-Projects currently behave more like **lightweight grouping and scoping** than a heavy, deeply modeled workspace. Chats are the primary surface; projects mainly organize knowledge and defaults.
+Projects currently behave like **lightweight grouping only**. Chats are the primary surface; projects are just a way to organize related threads without adding extra runtime behavior.
 
 ## Workspace
 
@@ -89,12 +89,12 @@ Near-term UX direction that is **desired but not fully implemented yet**:
 - Backend-managed model listing from the Copilot SDK
 - Copilot SDK status/session inspection plus deletion via `/api/copilot/status` and `/api/copilot/sessions/:sessionId`
 - Rich Copilot model metadata including capabilities, billing, policy, and reasoning-effort support
-- Copilot infinite-session configuration with app-owned SDK tools for project knowledge and thread attachments
+- Copilot infinite-session configuration with app-owned SDK tools for thread attachments
 - Local file attachments stored on the Mac host
-- Thread-local uploads by default, with explicit promotion into project knowledge
+- Thread-local uploads stored and reused locally
 - Hosted frontend default daemon URL injection for GitHub Pages
 - Service-worker cache fingerprinting so old app shells are invalidated on deploy
-- In-app PWA update prompt that can apply waiting service-worker updates
+- Forced PWA shell updates so fresh deployments take over immediately
 
 ## How Copilot is managing state here
 
@@ -207,39 +207,11 @@ For thread attachments:
 - PDF context is formatted into prompt context locally
 - the backend injects relevant PDF excerpts into the Copilot prompt
 
-For project knowledge:
+Projects do not add a separate knowledge layer anymore.
 
-- the attachment can be explicitly promoted into knowledge scope
-- the current implementation then uses RagFlow as the reusable project-knowledge layer
-
-## What RagFlow currently does
-
-RagFlow is still wired in, but only for the project-knowledge path.
-
-Current RagFlow role:
-
-- create or reuse project datasets
-- upload promoted knowledge files
-- retrieve chunks for project-scoped grounding
-- fall back to local PDF context if RagFlow yields nothing useful
-
-Files involved:
-
-- `apps/api/src/services/ragflow.ts`
-- `apps/api/src/services/retrieval.ts`
-- `apps/api/src/routes/attachments.ts`
-
-### Product direction
-
-Based on the current product direction, RagFlow now looks more optional than essential.
-
-The likely next direction is:
-
-- remove RagFlow completely
-- use local folders and local indexing/selection instead
-- keep projects as grouping and scoping, not as external knowledge-service datasets
-
-That direction is **not implemented yet**, but it is now a likely simplification path.
+- attachments remain thread-local
+- project assignment is just grouping
+- no RagFlow service is used in the current implementation
 
 ## Copilot SDK integration: current adoption
 
@@ -439,10 +411,6 @@ COPILOT_USE_LOGGED_IN_USER=true
 COPILOT_CLI_URL=
 # Optional: force a specific token instead of the logged-in local user
 COPILOT_GITHUB_TOKEN=
-
-# Optional RagFlow knowledge service
-RAGFLOW_BASE_URL=http://localhost:9380
-RAGFLOW_API_KEY=...
 
 # Optional remote/client access helpers
 PUBLIC_API_URL=

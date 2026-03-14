@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import type { AttachmentKind, AttachmentSummary, AttachmentScope } from '@github-personal-assistant/shared';
+import type { AttachmentKind, AttachmentSummary } from '@github-personal-assistant/shared';
 
 import { env } from '../config';
 import { db, nowIso } from '../db';
@@ -17,20 +17,15 @@ type AttachmentRow = {
   id: string;
   github_user_id: string;
   thread_id: string | null;
-  project_id: string | null;
   name: string;
   mime_type: string;
   size: number;
   kind: AttachmentKind;
-  scope: AttachmentScope;
-  knowledge_status: AttachmentSummary['knowledgeStatus'];
   file_path: string;
   pdf_context_file_path: string | null;
   pdf_extraction: PdfDocumentContext['extraction'] | null;
   pdf_page_count: number | null;
   pdf_title: string | null;
-  ragflow_dataset_id: string | null;
-  ragflow_document_id: string | null;
   uploaded_at: string;
 };
 
@@ -66,8 +61,6 @@ const toSummary = (attachment: AttachmentRow): AttachmentSummary => ({
   size: attachment.size,
   kind: attachment.kind,
   uploadedAt: attachment.uploaded_at,
-  scope: attachment.scope,
-  knowledgeStatus: attachment.knowledge_status,
 });
 
 const getAttachmentRows = (ownerId: string, attachmentIds: string[]) => {
@@ -106,14 +99,12 @@ const loadPdfContext = async (attachment: AttachmentRow) => {
 export const saveAttachment = async ({
   ownerId,
   threadId,
-  projectId,
   originalName,
   mimeType,
   bytes,
 }: {
   ownerId: string;
   threadId?: string;
-  projectId?: string;
   originalName: string;
   mimeType: string;
   bytes: Buffer;
@@ -139,19 +130,16 @@ export const saveAttachment = async ({
       INSERT INTO attachments (
         id, github_user_id, thread_id, project_id, name, mime_type, size, kind, scope,
         knowledge_status, file_path, pdf_context_file_path, pdf_extraction, pdf_page_count, pdf_title,
-        ragflow_dataset_id, ragflow_document_id, created_at, updated_at, uploaded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+        created_at, updated_at, uploaded_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'thread', 'none', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       attachmentId,
       ownerId,
       threadId ?? null,
-      projectId ?? null,
       originalName,
       mimeType,
       bytes.byteLength,
       getAttachmentKind(mimeType),
-      'thread',
-      'none',
       filePath,
       pdfContext ? attachmentPdfContextPath : null,
       pdfContext?.extraction ?? null,
@@ -229,45 +217,6 @@ export const buildAttachmentPromptContext = async ({
   const promptSections = pdfContexts.filter((section): section is string => Boolean(section));
   return promptSections.length > 0 ? promptSections.join('\n\n---\n\n') : '';
 };
-
-export const promoteAttachmentToKnowledge = (input: {
-  ownerId: string;
-  attachmentId: string;
-  projectId: string;
-  datasetId: string;
-  documentId: string;
-}) => {
-  db.prepare(
-    `UPDATE attachments
-     SET scope = 'knowledge', knowledge_status = 'pending', project_id = ?, ragflow_dataset_id = ?, ragflow_document_id = ?, updated_at = ?
-     WHERE github_user_id = ? AND id = ?`,
-  ).run(input.projectId, input.datasetId, input.documentId, nowIso(), input.ownerId, input.attachmentId);
-
-  return getAttachmentSummary(input.ownerId, input.attachmentId);
-};
-
-export const updateAttachmentKnowledgeStatus = (input: {
-  ownerId: string;
-  attachmentId: string;
-  knowledgeStatus: AttachmentSummary['knowledgeStatus'];
-}) => {
-  db.prepare('UPDATE attachments SET knowledge_status = ?, updated_at = ? WHERE github_user_id = ? AND id = ?').run(
-    input.knowledgeStatus,
-    nowIso(),
-    input.ownerId,
-    input.attachmentId,
-  );
-  return getAttachmentSummary(input.ownerId, input.attachmentId);
-};
-
-export const getKnowledgeAttachmentsForProject = (ownerId: string, projectId: string) =>
-  (db
-    .prepare(
-      `SELECT * FROM attachments
-       WHERE github_user_id = ? AND project_id = ? AND scope = 'knowledge'
-       ORDER BY uploaded_at DESC`,
-    )
-    .all(ownerId, projectId) as AttachmentRow[]);
 
 export const getPdfContextForAttachments = (attachmentIds: string[], ownerId: string) => {
   const attachments = getAttachmentRows(ownerId, attachmentIds);

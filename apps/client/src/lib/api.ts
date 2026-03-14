@@ -9,7 +9,6 @@ import type {
   GitHubDeviceAuthPoll,
   GitHubDeviceAuthStart,
   ModelOption,
-  ProjectDetail,
   ProjectSummary,
   ThreadDetail,
   ThreadSummary,
@@ -117,9 +116,9 @@ export const getHealth = () => fetchJson<ApiHealth>('/api/health');
 export const getAuthCapabilities = () => fetchJson<AuthCapabilities>('/api/auth/capabilities');
 export const getProjects = (sessionToken?: string) => fetchJson<{ projects: ProjectSummary[] }>('/api/projects', undefined, sessionToken);
 export const getProject = (projectId: string, sessionToken?: string) =>
-  fetchJson<{ project: ProjectDetail }>(`/api/projects/${projectId}`, undefined, sessionToken);
+  fetchJson<{ project: ProjectSummary }>(`/api/projects/${projectId}`, undefined, sessionToken);
 export const createProject = (payload: { name: string; description?: string }, sessionToken?: string) =>
-  fetchJson<{ project: ProjectDetail }>(
+  fetchJson<{ project: ProjectSummary }>(
     '/api/projects',
     {
       method: 'POST',
@@ -140,6 +139,15 @@ export const createThread = (payload: CreateThreadInput, sessionToken?: string) 
     '/api/threads',
     {
       method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    sessionToken,
+  );
+export const updateThread = (threadId: string, payload: { projectId?: string | null }, sessionToken?: string) =>
+  fetchJson<{ thread: ThreadSummary }>(
+    `/api/threads/${threadId}`,
+    {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     },
     sessionToken,
@@ -181,7 +189,7 @@ type UploadableAttachment = {
 export const uploadAttachment = async (
   attachment: UploadableAttachment,
   sessionToken: string,
-  options?: { threadId?: string; projectId?: string },
+  options?: { threadId?: string },
 ) => {
   const body = new FormData();
   const url = await buildUrl('/api/attachments');
@@ -189,10 +197,6 @@ export const uploadAttachment = async (
 
   if (options?.threadId) {
     body.append('threadId', options.threadId);
-  }
-
-  if (options?.projectId) {
-    body.append('projectId', options.projectId);
   }
 
   let response: Response;
@@ -217,16 +221,6 @@ export const uploadAttachment = async (
 
   return response.json() as Promise<{ attachment: AttachmentSummary }>;
 };
-
-export const promoteAttachmentToKnowledge = (attachmentId: string, payload: { projectId: string }, sessionToken: string) =>
-  fetchJson<{ attachment: AttachmentSummary }>(
-    `/api/attachments/${attachmentId}/promote`,
-    {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    },
-    sessionToken,
-  );
 
 export const abortChat = (payload: { threadId: string }, sessionToken: string) =>
   fetchJson<{ aborted: boolean }>(

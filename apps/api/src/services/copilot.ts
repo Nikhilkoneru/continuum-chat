@@ -1,7 +1,5 @@
 import fs from 'node:fs';
 
-import { z } from 'zod';
-
 import type { CopilotClient, CopilotSession, ResumeSessionConfig, SessionConfig } from '@github/copilot-sdk';
 import type {
   AttachmentSummary,
@@ -14,7 +12,6 @@ import type {
 } from '@github-personal-assistant/shared';
 
 import { env, canUseCopilot } from '../config';
-import { buildKnowledgePromptContext } from './retrieval';
 import { getThreadDetail } from '../store/thread-store';
 
 type CopilotSdkModule = typeof import('@github/copilot-sdk');
@@ -257,33 +254,8 @@ const listThreadAttachments = (ownerId: string, threadId: string): AttachmentSum
 
 const createSessionTools = async (ownerId: string, threadId: string) => {
   const { defineTool } = await loadSdkModule();
-  const lookupSchema = {
-    type: 'object',
-    properties: {
-      query: {
-        type: 'string',
-        description: 'The focused project-knowledge question to look up before answering.',
-      },
-    },
-    required: ['query'],
-    additionalProperties: false,
-  } satisfies Record<string, unknown>;
 
   return [
-    defineTool('lookup_project_knowledge', {
-      description: 'Search the project knowledge connected to this chat thread and return the most relevant grounding context.',
-      parameters: lookupSchema,
-      handler: async (args) => {
-        const { query } = z.object({ query: z.string().min(1) }).parse(args);
-        const context = await buildKnowledgePromptContext({
-          ownerId,
-          threadId,
-          query,
-        });
-
-        return context || 'No project knowledge is currently available for this thread.';
-      },
-    }),
     defineTool('list_thread_attachments', {
       description: 'List files that have already been attached in this chat thread.',
       handler: () => {
@@ -298,8 +270,6 @@ const createSessionTools = async (ownerId: string, threadId: string) => {
           mimeType: attachment.mimeType,
           size: attachment.size,
           kind: attachment.kind,
-          scope: attachment.scope,
-          knowledgeStatus: attachment.knowledgeStatus,
           uploadedAt: attachment.uploadedAt,
         }));
       },
