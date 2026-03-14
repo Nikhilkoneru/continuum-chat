@@ -1,8 +1,8 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 
-import App from './app';
-import { AuthProvider } from './providers/auth-provider';
+import App from './app.js';
+import { AuthProvider } from './providers/auth-provider.js';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

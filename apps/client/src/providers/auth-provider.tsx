@@ -2,8 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 import type { GitHubDeviceAuthStart, UserSession } from '@github-personal-assistant/shared';
 
-import { getSession, logout, pollGitHubDeviceAuth, registerUnauthorizedHandler, startGitHubDeviceAuth } from '../lib/api';
-import { tokenStorage } from '../lib/token-storage';
+import { getSession, logout, pollGitHubDeviceAuth, registerUnauthorizedHandler, startGitHubDeviceAuth } from '../lib/api.js';
+import { tokenStorage } from '../lib/token-storage.js';
 
 type AuthContextValue = {
   isRestoring: boolean;

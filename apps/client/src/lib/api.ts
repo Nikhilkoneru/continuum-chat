@@ -14,7 +14,7 @@ import type {
   UserSession,
 } from '@github-personal-assistant/shared';
 
-import { resolveApiUrl } from './api-config';
+import { resolveApiUrl } from './api-config.js';
 
 const buildUrl = async (path: string) => `${await resolveApiUrl()}${path}`;
 

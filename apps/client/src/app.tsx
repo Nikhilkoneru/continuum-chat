@@ -10,7 +10,7 @@ import type {
   ThreadSummary,
 } from '@github-personal-assistant/shared';
 
-import { MessageBubble } from './components/message-bubble';
+import { MessageBubble } from './components/message-bubble.js';
 import {
   createProject,
   createThread,
@@ -22,9 +22,9 @@ import {
   promoteAttachmentToKnowledge,
   streamChat,
   uploadAttachment,
-} from './lib/api';
-import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config';
-import { useAuth } from './providers/auth-provider';
+} from './lib/api.js';
+import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config.js';
+import { useAuth } from './providers/auth-provider.js';
 
 type LocalChat = ThreadDetail & {
   draftAttachments: AttachmentSummary[];
