@@ -92,7 +92,7 @@ This starts a small local static dev server that rebuilds the client when files 
 - `APP_AUTH_MODE=local` is the recommended default for a single-user Mac daemon. The frontend will auto-negotiate auth with the backend and create a local session automatically.
 - For GitHub device-flow app auth, set `APP_AUTH_MODE=github-device` and `GITHUB_CLIENT_ID`.
 - For redirect-based GitHub OAuth app auth, set `APP_AUTH_MODE=github-oauth` plus `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `GITHUB_CALLBACK_URL`.
-- For hosted frontends such as GitHub Pages, set `CLIENT_DEFAULT_API_URL` to your Tailscale HTTPS URL so first load points at the daemon instead of `localhost`.
+- For hosted frontends such as GitHub Pages, set the repository Actions variable `CLIENT_DEFAULT_API_URL` to your Tailscale HTTPS URL so first load points at the daemon instead of `localhost`.
 - The client stores session tokens per daemon origin and auth config version, so switching daemon URLs or auth modes does not reuse stale sessions.
 - `SERVICE_ACCESS_TOKEN` is an optional backend gate for client requests, but for hosted frontends the preferred long-term model is user auth and device pairing instead of a shared frontend secret.
 - `TAILSCALE_API_URL` is the preferred static remote URL for this setup. Example: `http://your-mac.tailnet-name.ts.net:4000`.

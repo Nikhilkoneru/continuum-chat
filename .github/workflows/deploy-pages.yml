@@ -46,6 +46,8 @@ jobs:
 
       - name: Export web app
         working-directory: apps/client
+        env:
+          CLIENT_DEFAULT_API_URL: ${{ vars.CLIENT_DEFAULT_API_URL }}
         run: pnpm export:web
 
       - name: Upload Pages artifact
