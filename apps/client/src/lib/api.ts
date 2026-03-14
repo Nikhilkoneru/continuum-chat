@@ -4,6 +4,7 @@ import type {
   ApiHealth,
   ChatStreamInput,
   ChatStreamEvent,
+  CopilotPreferences,
   CreateThreadInput,
   GitHubDeviceAuthPoll,
   GitHubDeviceAuthStart,
@@ -144,6 +145,17 @@ export const createThread = (payload: CreateThreadInput, sessionToken?: string) 
     sessionToken,
   );
 export const getModels = (sessionToken?: string) => fetchJson<{ models: ModelOption[] }>('/api/models', undefined, sessionToken);
+export const getCopilotPreferences = (sessionToken: string) =>
+  fetchJson<{ preferences: CopilotPreferences }>('/api/copilot/preferences', undefined, sessionToken);
+export const updateCopilotPreferences = (payload: CopilotPreferences, sessionToken: string) =>
+  fetchJson<{ preferences: CopilotPreferences }>(
+    '/api/copilot/preferences',
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+    sessionToken,
+  );
 export const getSession = (sessionToken: string) => fetchJson<{ session: UserSession | null }>('/api/auth/session', undefined, sessionToken);
 export const bootstrapLocalSession = () => fetchJson<{ session: UserSession }>('/api/auth/local/session', { method: 'POST' });
 export const logout = (sessionToken: string) =>
@@ -209,6 +221,16 @@ export const uploadAttachment = async (
 export const promoteAttachmentToKnowledge = (attachmentId: string, payload: { projectId: string }, sessionToken: string) =>
   fetchJson<{ attachment: AttachmentSummary }>(
     `/api/attachments/${attachmentId}/promote`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    sessionToken,
+  );
+
+export const abortChat = (payload: { threadId: string }, sessionToken: string) =>
+  fetchJson<{ aborted: boolean }>(
+    '/api/chat/abort',
     {
       method: 'POST',
       body: JSON.stringify(payload),

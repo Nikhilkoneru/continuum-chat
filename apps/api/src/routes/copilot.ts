@@ -1,8 +1,11 @@
+import type { CopilotApprovalMode } from '@github-personal-assistant/shared';
+
 import { Router } from 'express';
 import { z } from 'zod';
 
 import { requireRequestSession } from '../lib/auth';
 import { deleteCopilotSession, getCopilotOverview } from '../services/copilot';
+import { getCopilotPreferences, setCopilotApprovalMode } from '../store/copilot-preferences-store';
 
 const router = Router();
 
@@ -11,6 +14,34 @@ const filterSchema = z.object({
   gitRoot: z.string().trim().min(1).optional(),
   repository: z.string().trim().min(1).optional(),
   branch: z.string().trim().min(1).optional(),
+});
+
+const preferenceSchema = z.object({
+  approvalMode: z.enum(['approve-all', 'safer-defaults'] satisfies [CopilotApprovalMode, ...CopilotApprovalMode[]]),
+});
+
+router.get('/api/copilot/preferences', (request, response) => {
+  const session = requireRequestSession(request, response);
+  if (!session) {
+    return;
+  }
+
+  response.json({ preferences: getCopilotPreferences() });
+});
+
+router.put('/api/copilot/preferences', (request, response) => {
+  const session = requireRequestSession(request, response);
+  if (!session) {
+    return;
+  }
+
+  const parsed = preferenceSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  response.json({ preferences: setCopilotApprovalMode(parsed.data.approvalMode) });
 });
 
 router.get('/api/copilot/status', async (request, response) => {

@@ -49,6 +49,11 @@ export type ApiHealth = {
 };
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type CopilotApprovalMode = 'approve-all' | 'safer-defaults';
+
+export type CopilotPreferences = {
+  approvalMode: CopilotApprovalMode;
+};
 
 export type CopilotModelCapabilities = {
   supports: {
@@ -208,5 +213,6 @@ export type ChatStreamInput = {
 export type ChatStreamEvent =
   | { type: 'session'; sessionId: string }
   | { type: 'chunk'; delta: string }
+  | { type: 'aborted'; message: string }
   | { type: 'done' }
   | { type: 'error'; message: string };

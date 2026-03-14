@@ -210,6 +210,11 @@ button { cursor: pointer; }
 .status-dot.online { background: var(--success); box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14); }
 .status-dot.offline { background: var(--danger); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12); }
 .install-note { font-size: 0.88rem; color: var(--muted); }
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
 .input, .textarea, .select {
   width: 100%;
@@ -380,6 +385,9 @@ button { cursor: pointer; }
 .composer-send-button:hover {
   transform: translateY(-1px);
   filter: brightness(1.04);
+}
+.composer-send-button:active {
+  transform: translateY(0);
 }
 .composer-send-button:disabled {
   opacity: 0.55;

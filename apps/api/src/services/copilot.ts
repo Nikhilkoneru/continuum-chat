@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { CopilotClient, CopilotSession, ResumeSessionConfig, SessionConfig } from '@github/copilot-sdk';
 import type {
   AttachmentSummary,
+  CopilotApprovalMode,
   CopilotAuthStatus,
   CopilotSessionSummary,
   CopilotStatusResponse,
@@ -26,6 +27,18 @@ const makeKey = (githubToken?: string) => (githubToken ? `user:${githubToken.sli
 const loadSdkModule = () => {
   sdkModulePromise ??= import('@github/copilot-sdk');
   return sdkModulePromise;
+};
+
+const createPermissionHandler = (approvalMode: CopilotApprovalMode) => (request: { kind: string }) => {
+  if (approvalMode === 'approve-all') {
+    return { kind: 'approved' as const };
+  }
+
+  if (request.kind === 'read' || request.kind === 'url' || request.kind === 'custom-tool') {
+    return { kind: 'approved' as const };
+  }
+
+  return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' as const };
 };
 
 const toIsoString = (value: Date | string) => {
@@ -300,6 +313,7 @@ export const getOrCreateSession = async ({
   ownerId,
   threadId,
   model,
+  approvalMode,
   systemMessage,
 }: {
   sessionId: string;
@@ -307,12 +321,10 @@ export const getOrCreateSession = async ({
   ownerId: string;
   threadId: string;
   model: string;
+  approvalMode: CopilotApprovalMode;
   systemMessage?: string;
 }): Promise<CopilotSession> => {
-  const [{ approveAll }, client] = await Promise.all([
-    loadSdkModule(),
-    getCopilotClient(githubToken),
-  ]);
+  const client = await getCopilotClient(githubToken);
 
   fs.mkdirSync(env.copilotConfigDir, { recursive: true });
   fs.mkdirSync(env.copilotWorkingDirectory, { recursive: true });
@@ -324,7 +336,7 @@ export const getOrCreateSession = async ({
     model,
     streaming: true,
     tools,
-    onPermissionRequest: approveAll,
+    onPermissionRequest: createPermissionHandler(approvalMode),
     infiniteSessions: env.copilotInfiniteSessionsEnabled
       ? {
           enabled: true,

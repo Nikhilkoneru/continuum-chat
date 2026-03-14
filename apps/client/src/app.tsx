@@ -4,6 +4,7 @@ import type {
   AttachmentSummary,
   ApiHealth,
   ChatMessage,
+  CopilotPreferences,
   ModelOption,
   ProjectSummary,
   ThreadDetail,
@@ -12,8 +13,10 @@ import type {
 
 import { MessageBubble } from './components/message-bubble.js';
 import {
+  abortChat,
   createProject,
   createThread,
+  getCopilotPreferences,
   getHealth,
   getModels,
   getProjects,
@@ -21,6 +24,7 @@ import {
   getThreads,
   promoteAttachmentToKnowledge,
   streamChat,
+  updateCopilotPreferences,
   uploadAttachment,
 } from './lib/api.js';
 import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config.js';
@@ -120,6 +124,14 @@ function MenuIcon() {
   );
 }
 
+function StopIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="2.2" />
+    </svg>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -191,6 +203,8 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [isUpdateReady, setIsUpdateReady] = useState(false);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+  const [copilotPreferences, setCopilotPreferences] = useState<CopilotPreferences>({ approvalMode: 'approve-all' });
+  const [savingApprovalMode, setSavingApprovalMode] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -380,16 +394,18 @@ export default function App() {
         return;
       }
 
-      const [healthPayload, projectsPayload, modelsPayload, threadsPayload] = await Promise.all([
+      const [healthPayload, projectsPayload, modelsPayload, threadsPayload, preferencesPayload] = await Promise.all([
         getHealth(),
         getProjects(session.sessionToken),
         getModels(session.sessionToken),
         getThreads(session.sessionToken),
+        getCopilotPreferences(session.sessionToken),
       ]);
 
       setHealth(healthPayload);
       setProjects(projectsPayload.projects);
       setModels(modelsPayload.models);
+      setCopilotPreferences(preferencesPayload.preferences);
       setChats((current) => {
         const existingById = new Map(current.map((chat) => [chat.id, chat]));
         return threadsPayload.threads.map((thread) => mergeThreadIntoLocal(thread, existingById.get(thread.id)));
@@ -510,6 +526,26 @@ export default function App() {
       setError(authError instanceof Error ? authError.message : 'Unable to complete sign-in.');
     });
   }, [openPendingGitHubVerification, pendingDeviceAuth, signIn]);
+
+  const handleApprovalModeChange = useCallback(
+    async (approvalMode: CopilotPreferences['approvalMode']) => {
+      if (!session) {
+        return;
+      }
+
+      setSavingApprovalMode(true);
+      setError(null);
+      try {
+        const payload = await updateCopilotPreferences({ approvalMode }, session.sessionToken);
+        setCopilotPreferences(payload.preferences);
+      } catch (settingsError) {
+        setError(settingsError instanceof Error ? settingsError.message : 'Unable to update tool approvals.');
+      } finally {
+        setSavingApprovalMode(false);
+      }
+    },
+    [session],
+  );
 
   const handleCreateChat = useCallback(async () => {
     if (!session) return;
@@ -740,6 +776,31 @@ export default function App() {
               ),
             }));
             setError(event.message);
+            return;
+          }
+          if (event.type === 'aborted') {
+            if (flushTimer !== null) {
+              clearTimeout(flushTimer);
+              flushTimer = null;
+            }
+            flushPendingDelta();
+            updateChat(chatId, (chat) => {
+              const assistantMessage = chat.messages.find((message) => message.id === assistantMessageId);
+              const hasContent = Boolean(assistantMessage?.content.trim());
+              return {
+                ...chat,
+                updatedAt: new Date().toISOString(),
+                messages: sortMessages(
+                  chat.messages.map((message) =>
+                    message.id === assistantMessageId
+                      ? hasContent
+                        ? message
+                        : { ...message, role: 'error', content: event.message }
+                      : message,
+                  ),
+                ),
+              };
+            });
           }
         },
       );
@@ -773,6 +834,19 @@ export default function App() {
     }
   }, [defaultModel, draft, loadThreadDetail, selectedChat, session, signOut, streamingChatId, updateChat]);
 
+  const handleAbortStreaming = useCallback(async () => {
+    if (!session || !streamingChatId) {
+      return;
+    }
+
+    setError(null);
+    try {
+      await abortChat({ threadId: streamingChatId }, session.sessionToken);
+    } catch (abortError) {
+      setError(abortError instanceof Error ? abortError.message : 'Unable to stop the current response.');
+    }
+  }, [session, streamingChatId]);
+
   const connectionModal = connectionSettingsVisible ? (
     <div className="modal-backdrop" onClick={() => setConnectionSettingsVisible(false)}>
       <div className="sheet-card narrow" onClick={(event) => event.stopPropagation()}>
@@ -795,6 +869,12 @@ export default function App() {
     </div>
   ) : null;
 
+  const approvalModeDescription =
+    copilotPreferences.approvalMode === 'approve-all'
+      ? 'Shell, write, and other Copilot tool requests run without extra blocking.'
+      : 'Read-style tools stay available, while shell and write actions are denied by default.';
+  const isSelectedChatStreaming = selectedChat?.id === streamingChatId;
+
   const settingsModal = settingsVisible ? (
     <div className="modal-backdrop" onClick={() => setSettingsVisible(false)}>
       <div className="modal-card narrow" onClick={(event) => event.stopPropagation()}>
@@ -808,6 +888,20 @@ export default function App() {
             <div className="status-item"><div className="status-label">Install</div><div className="status-value">{isStandalone ? 'Installed' : installPromptEvent ? 'Ready to install' : 'Browser install available'}</div></div>
             <div className="status-item"><div className="status-label">Connectivity</div><div className="status-value"><span className="status-inline"><span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />{isOnline ? 'Online' : 'Offline'}</span></div></div>
           </div>
+        <div className="settings-block">
+          <label className="modal-label" htmlFor="approval-mode">Tool approvals</label>
+          <select
+            id="approval-mode"
+            className="select"
+            value={copilotPreferences.approvalMode}
+            onChange={(event) => void handleApprovalModeChange(event.target.value as CopilotPreferences['approvalMode'])}
+            disabled={savingApprovalMode}
+          >
+            <option value="approve-all">Approve all</option>
+            <option value="safer-defaults">Safer defaults</option>
+          </select>
+          <div className="helper-text">{savingApprovalMode ? 'Saving approval mode…' : approvalModeDescription}</div>
+        </div>
         {!isStandalone ? <div className="install-note">On iPhone or iPad, open the browser share menu and choose <strong>Add to Home Screen</strong>.</div> : null}
         <div className="modal-actions">
           {!isStandalone ? <button className="ghost-button install-cta" onClick={() => void handleInstallApp()}><InstallIcon />Install app</button> : null}
@@ -1058,12 +1152,12 @@ export default function App() {
                 <button
                   type="button"
                   className="composer-send-button"
-                  onClick={() => void handleSend()}
-                  disabled={Boolean(streamingChatId) || !draft.trim()}
-                  aria-label={streamingChatId ? 'Streaming response' : 'Send message'}
-                  title={streamingChatId ? 'Streaming response' : 'Send message'}
+                  onClick={() => void (isSelectedChatStreaming ? handleAbortStreaming() : handleSend())}
+                  disabled={isSelectedChatStreaming ? false : Boolean(streamingChatId) || !draft.trim()}
+                  aria-label={isSelectedChatStreaming ? 'Stop response' : 'Send message'}
+                  title={isSelectedChatStreaming ? 'Stop response' : 'Send message'}
                 >
-                  <SendIcon />
+                  {isSelectedChatStreaming ? <StopIcon /> : <SendIcon />}
                 </button>
               </div>
             </div>

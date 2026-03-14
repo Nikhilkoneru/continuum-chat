@@ -134,6 +134,12 @@ CREATE TABLE IF NOT EXISTS service_clients (
   created_at TEXT NOT NULL,
   last_seen_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS app_preferences (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 const ensureColumn = (table: string, column: string, alterSql: string) => {

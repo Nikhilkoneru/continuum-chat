@@ -8,6 +8,7 @@ import { requireRequestSession } from '../lib/auth';
 import { getOrCreateSession } from '../services/copilot';
 import { buildKnowledgePromptContext } from '../services/retrieval';
 import { buildAttachmentPromptContext, getAttachmentInputs } from '../store/attachment-store';
+import { getCopilotPreferences } from '../store/copilot-preferences-store';
 import {
   createMessage,
   getThread,
@@ -21,6 +22,7 @@ import {
 import { getProject } from '../store/project-store';
 
 const router = Router();
+const SEND_AND_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 
 const chatSchema = z.object({
   threadId: z.string().trim().min(1),
@@ -29,14 +31,27 @@ const chatSchema = z.object({
   attachments: z.array(z.string().trim().min(1)).max(5).optional(),
 });
 
+const abortSchema = z.object({
+  threadId: z.string().trim().min(1),
+});
+
 type SessionLike = {
   on: (eventName: string, listener: (event: unknown) => void) => () => void;
-  send: (input: {
+  sendAndWait: (input: {
     prompt: string;
     attachments?: Array<{ type: 'file'; path: string; displayName?: string }>;
-  }) => Promise<unknown>;
+  }, timeout?: number) => Promise<unknown>;
+  abort: () => Promise<void>;
   disconnect: () => Promise<void>;
 };
+
+type ActiveSessionEntry = {
+  session: SessionLike;
+  aborted: boolean;
+};
+
+const activeSessions = new Map<string, ActiveSessionEntry>();
+const pendingAborts = new Set<string>();
 
 const flushResponse = (response: Response) => {
   const maybeFlush = (response as Response & { flush?: () => void }).flush;
@@ -50,25 +65,6 @@ const writeEvent = (response: Response, payload: ChatStreamEvent) => {
   flushResponse(response);
 };
 
-const waitForIdle = (session: SessionLike) =>
-  new Promise<void>((resolve, reject) => {
-    const unsubscribeIdle = session.on('session.idle', () => {
-      unsubscribeIdle();
-      unsubscribeError();
-      resolve();
-    });
-
-    const unsubscribeError = session.on('session.error', (event: unknown) => {
-      unsubscribeIdle();
-      unsubscribeError();
-      const message =
-        typeof event === 'object' && event && 'data' in event && typeof (event as { data?: { message?: string } }).data?.message === 'string'
-          ? (event as { data?: { message?: string } }).data!.message!
-          : 'Unknown Copilot session error.';
-      reject(new Error(message));
-    });
-  });
-
 const summarizeTitle = (prompt: string) => {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   return singleLine.length > 42 ? `${singleLine.slice(0, 42)}...` : singleLine;
@@ -79,6 +75,37 @@ const historyToPrompt = (messages: Array<{ role: ChatRole; content: string }>) =
     .filter((message) => message.role === 'user' || message.role === 'assistant' || message.role === 'system')
     .map((message) => `${message.role}: ${message.content}`)
     .join('\n');
+
+router.post('/api/chat/abort', async (request, response) => {
+  const parsed = abortSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const userSession = requireRequestSession(request, response);
+  if (!userSession) {
+    return;
+  }
+
+  const ownerId = String(userSession.user.id);
+  const thread = getThread(ownerId, parsed.data.threadId);
+  if (!thread) {
+    response.status(404).json({ error: 'Thread not found.' });
+    return;
+  }
+
+  const entry = activeSessions.get(thread.id);
+  if (!entry) {
+    pendingAborts.add(thread.id);
+    response.json({ aborted: true });
+    return;
+  }
+
+  entry.aborted = true;
+  await entry.session.abort().catch(() => undefined);
+  response.json({ aborted: true });
+});
 
 router.post('/api/chat/stream', async (request, response) => {
   const parsed = chatSchema.safeParse(request.body);
@@ -181,8 +208,18 @@ router.post('/api/chat/stream', async (request, response) => {
       ownerId,
       threadId: thread.id,
       model,
+      approvalMode: getCopilotPreferences().approvalMode,
       systemMessage: project?.instructions,
     })) as unknown as SessionLike;
+    activeSessions.set(thread.id, { session, aborted: false });
+    if (pendingAborts.has(thread.id)) {
+      pendingAborts.delete(thread.id);
+      if (assistantMessageId) {
+        updateMessage(assistantMessageId, { content: 'Response stopped.', role: 'error' });
+      }
+      writeEvent(response, { type: 'aborted', message: 'Response stopped.' });
+      return;
+    }
 
     unsubscribeDelta = session.on('assistant.message_delta', (event: unknown) => {
       const delta =
@@ -219,16 +256,27 @@ router.post('/api/chat/stream', async (request, response) => {
       updateMessage(assistantMessageId, { content });
     });
 
-    await session.send({ prompt: promptWithHistory, attachments: attachmentInputs ?? [] });
-    await waitForIdle(session);
+    await session.sendAndWait({ prompt: promptWithHistory, attachments: attachmentInputs ?? [] }, SEND_AND_WAIT_TIMEOUT_MS);
+    if (activeSessions.get(thread.id)?.aborted) {
+      writeEvent(response, { type: 'aborted', message: 'Response stopped.' });
+      return;
+    }
     writeEvent(response, { type: 'done' });
   } catch (error) {
+    const wasAborted = activeSessions.get(thread.id)?.aborted ?? false;
+    if (wasAborted) {
+      writeEvent(response, { type: 'aborted', message: 'Response stopped.' });
+      return;
+    }
+
     const message = error instanceof Error ? error.message : 'Unknown streaming error.';
     if (assistantMessageId) {
       updateMessage(assistantMessageId, { content: message, role: 'error' });
     }
     writeEvent(response, { type: 'error', message });
   } finally {
+    activeSessions.delete(thread.id);
+    pendingAborts.delete(thread.id);
     unsubscribeDelta?.();
     unsubscribeMessage?.();
     await session?.disconnect().catch(() => undefined);
