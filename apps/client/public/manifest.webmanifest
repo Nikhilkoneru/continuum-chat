@@ -1,9 +1,41 @@
 {
+  "id": "./",
   "name": "Github Personal Assistant",
   "short_name": "Assistant",
-  "start_url": ".",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "background_color": "#0b1020",
   "theme_color": "#0b1020",
-  "description": "Connect a hosted React frontend to your own GitHub assistant daemon."
+  "description": "Connect a hosted React frontend to your own GitHub assistant daemon.",
+  "categories": ["productivity", "developer", "utilities"],
+  "icons": [
+    {
+      "src": "./icons/app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/app-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open assistant",
+      "short_name": "Assistant",
+      "description": "Reconnect to your personal assistant daemon.",
+      "url": "./"
+    }
+  ]
 }

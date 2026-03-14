@@ -31,6 +31,15 @@ type LocalChat = ThreadDetail & {
   hasLoadedMessages: boolean;
 };
 
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+};
+
+type IOSNavigator = Navigator & {
+  standalone?: boolean;
+};
+
 const createId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const sortMessages = (messages: ChatMessage[]) =>
   [...messages]
@@ -83,6 +92,9 @@ export default function App() {
   const [savedApiUrlOverride, setSavedApiUrlOverride] = useState<string | null>(null);
   const [savingConnection, setSavingConnection] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -111,6 +123,67 @@ export default function App() {
   useEffect(() => {
     void refreshConnectionState();
   }, [refreshConnectionState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(display-mode: standalone)');
+    const updateStandalone = () => {
+      const iosStandalone = Boolean((window.navigator as IOSNavigator).standalone);
+      setIsStandalone(mediaQuery.matches || iosStandalone);
+    };
+
+    updateStandalone();
+    mediaQuery.addEventListener('change', updateStandalone);
+    window.addEventListener('appinstalled', updateStandalone);
+
+    return () => {
+      mediaQuery.removeEventListener('change', updateStandalone);
+      window.removeEventListener('appinstalled', updateStandalone);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      const promptEvent = event as BeforeInstallPromptEvent;
+      promptEvent.preventDefault();
+      setInstallPromptEvent(promptEvent);
+    };
+
+    const handleInstalled = () => {
+      setInstallPromptEvent(null);
+      setIsStandalone(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt as EventListener);
+    window.addEventListener('appinstalled', handleInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt as EventListener);
+      window.removeEventListener('appinstalled', handleInstalled);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const updateOnlineStatus = () => setIsOnline(window.navigator.onLine);
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+
+    return () => {
+      window.removeEventListener('online', updateOnlineStatus);
+      window.removeEventListener('offline', updateOnlineStatus);
+    };
+  }, []);
 
   const updateChat = useCallback((chatId: string, updater: (chat: LocalChat) => LocalChat) => {
     setChats((current) => current.map((chat) => (chat.id === chatId ? updater(chat) : chat)));
@@ -229,6 +302,19 @@ export default function App() {
     void refreshConnectionState();
     setConnectionSettingsVisible(true);
   }, [refreshConnectionState]);
+
+  const handleInstallApp = useCallback(async () => {
+    if (installPromptEvent) {
+      await installPromptEvent.prompt();
+      const choice = await installPromptEvent.userChoice.catch(() => ({ outcome: 'dismissed' as const, platform: '' }));
+      if (choice.outcome === 'accepted') {
+        setInstallPromptEvent(null);
+      }
+      return;
+    }
+
+    setError('Use your browser menu and choose "Install app" or "Add to Home Screen" to install this PWA.');
+  }, [installPromptEvent]);
 
   const handleSaveConnection = useCallback(async () => {
     setSavingConnection(true);
@@ -565,8 +651,12 @@ export default function App() {
           <div className="status-item"><div className="status-label">Remote access</div><div className="status-value">{remoteAccessLabel}</div></div>
           <div className="status-item"><div className="status-label">RagFlow</div><div className="status-value">{health?.ragflowConfigured ? 'Connected' : 'Not configured'}</div></div>
           <div className="status-item"><div className="status-label">Auth</div><div className="status-value">{health?.authConfigured ? 'Configured' : 'Missing GitHub client ID'}</div></div>
+          <div className="status-item"><div className="status-label">Install</div><div className="status-value">{isStandalone ? 'Installed' : installPromptEvent ? 'Ready to install' : 'Browser install available'}</div></div>
+          <div className="status-item"><div className="status-label">Connectivity</div><div className="status-value"><span className="status-inline"><span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />{isOnline ? 'Online' : 'Offline'}</span></div></div>
         </div>
+        {!isStandalone ? <div className="install-note">On iPhone or iPad, open the browser share menu and choose <strong>Add to Home Screen</strong>.</div> : null}
         <div className="modal-actions">
+          {!isStandalone ? <button className="ghost-button install-cta" onClick={() => void handleInstallApp()}>Install app</button> : null}
           <button className="ghost-button" onClick={() => { setSettingsVisible(false); openConnectionSettings(); }}>Connection</button>
           <button className="ghost-button" onClick={() => setSettingsVisible(false)}>Close</button>
           <button className="danger-button" onClick={() => { setSettingsVisible(false); void signOut(); }}>Sign out</button>
@@ -592,6 +682,8 @@ export default function App() {
               <div className="status-grid">
                 <div className="status-item"><div className="status-label">Daemon endpoint</div><div className="status-value">{activeApiUrl}</div></div>
                 <div className="status-item"><div className="status-label">Remote access</div><div className="status-value">{remoteAccessLabel}</div></div>
+                <div className="status-item"><div className="status-label">Install</div><div className="status-value">{isStandalone ? 'Installed' : installPromptEvent ? 'Ready to install' : 'Use browser install'}</div></div>
+                <div className="status-item"><div className="status-label">Connectivity</div><div className="status-value"><span className="status-inline"><span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />{isOnline ? 'Online' : 'Offline'}</span></div></div>
               </div>
             </div>
 
@@ -610,8 +702,10 @@ export default function App() {
 
             <div className="modal-actions">
               <button className="button" onClick={handleAuthPress}>{pendingDeviceAuth ? 'Open verification page' : 'Sign in with GitHub'}</button>
+              {!isStandalone ? <button className="ghost-button install-cta" onClick={() => void handleInstallApp()}>Install app</button> : null}
               <button className="ghost-button" onClick={openConnectionSettings}>Connection settings</button>
             </div>
+            {!isStandalone ? <div className="install-note">For Safari on iPhone, use Share → Add to Home Screen.</div> : null}
           </section>
         </div>
         {connectionModal}
@@ -697,11 +791,13 @@ export default function App() {
               <select className="select" value={selectedChat?.model ?? defaultModel} onChange={(event) => selectedChat && updateChat(selectedChat.id, (chat) => ({ ...chat, model: event.target.value }))}>
                 {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
               </select>
+              {!isStandalone ? <button className="ghost-button install-cta" onClick={() => void handleInstallApp()}>Install</button> : null}
               <button className="ghost-button" onClick={() => setSettingsVisible(true)}>Settings</button>
             </div>
           </header>
 
           <div className="message-scroll" ref={messagesRef}>
+            {!isOnline ? <div className="top-banner offline">You are offline. The app shell is cached, but your daemon must be reachable to sign in and chat.</div> : null}
             {loading ? (
               <div className="empty-state"><div><h2>Loading assistant…</h2><p>Restoring projects, threads, and daemon health.</p></div></div>
             ) : selectedChat?.messages.length ? (

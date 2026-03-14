@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, extname, join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -29,20 +29,19 @@ const collectFiles = (dir) => {
   return files;
 };
 
-const mimeByExtension = {
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.html': 'text/html',
-  '.webmanifest': 'application/manifest+json',
-};
-
 const appFiles = collectFiles(dist)
   .filter((file) => !file.endsWith('service-worker.js'))
   .map((file) => `./${file}`);
 
+const externalRuntimeFiles = [
+  'https://esm.sh/react@19.2.0',
+  'https://esm.sh/react@19.2.0/jsx-runtime',
+  'https://esm.sh/react-dom@19.2.0/client',
+];
+
 writeFileSync(
   join(dist, 'service-worker.js'),
-  `const CACHE_NAME = 'github-personal-assistant-v1';\nconst APP_FILES = ${JSON.stringify(appFiles, null, 2)};\n\nself.addEventListener('install', (event) => {\n  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_FILES)).then(() => self.skipWaiting()));\n});\n\nself.addEventListener('activate', (event) => {\n  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim()));\n});\n\nself.addEventListener('fetch', (event) => {\n  if (event.request.method !== 'GET') return;\n\n  event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {\n    const url = new URL(event.request.url);\n    if (response.ok && url.origin === self.location.origin) {\n      const cloned = response.clone();\n      caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cloned));\n    }\n    return response;\n  }).catch(() => caches.match('./index.html'))));\n});\n`,
+  `const SHELL_CACHE = 'github-personal-assistant-shell-v2';\nconst RUNTIME_CACHE = 'github-personal-assistant-runtime-v2';\nconst APP_FILES = ${JSON.stringify(appFiles, null, 2)};\nconst EXTERNAL_RUNTIME_FILES = ${JSON.stringify(externalRuntimeFiles, null, 2)};\n\nconst warmCache = async (cacheName, urls) => {\n  const cache = await caches.open(cacheName);\n  await Promise.allSettled(urls.map((url) => cache.add(url)));\n};\n\nconst cacheFirst = async (request, cacheName) => {\n  const cache = await caches.open(cacheName);\n  const cached = await cache.match(request);\n  if (cached) {\n    return cached;\n  }\n\n  const response = await fetch(request);\n  if (response.ok) {\n    await cache.put(request, response.clone());\n  }\n  return response;\n};\n\nconst staleWhileRevalidate = async (request, cacheName) => {\n  const cache = await caches.open(cacheName);\n  const cached = await cache.match(request);\n  const network = fetch(request)\n    .then((response) => {\n      if (response.ok) {\n        void cache.put(request, response.clone());\n      }\n      return response;\n    })\n    .catch(() => null);\n\n  if (cached) {\n    void network;\n    return cached;\n  }\n\n  const response = await network;\n  if (response) {\n    return response;\n  }\n\n  throw new Error('Network unavailable');\n};\n\nconst networkFirst = async (request) => {\n  const cache = await caches.open(SHELL_CACHE);\n  try {\n    const response = await fetch(request);\n    if (response.ok && request.method === 'GET') {\n      await cache.put(request, response.clone());\n    }\n    return response;\n  } catch {\n    const cached = await cache.match(request);\n    if (cached) {\n      return cached;\n    }\n    const fallback = await cache.match('./index.html');\n    if (fallback) {\n      return fallback;\n    }\n    throw new Error('Offline and no cached fallback available');\n  }\n};\n\nself.addEventListener('install', (event) => {\n  event.waitUntil(Promise.all([warmCache(SHELL_CACHE, APP_FILES), warmCache(RUNTIME_CACHE, EXTERNAL_RUNTIME_FILES)]).then(() => self.skipWaiting()));\n});\n\nself.addEventListener('activate', (event) => {\n  event.waitUntil(\n    caches\n      .keys()\n      .then((keys) => Promise.all(keys.filter((key) => key !== SHELL_CACHE && key !== RUNTIME_CACHE).map((key) => caches.delete(key))))\n      .then(() => self.clients.claim()),\n  );\n});\n\nself.addEventListener('fetch', (event) => {\n  if (event.request.method !== 'GET') {\n    return;\n  }\n\n  const url = new URL(event.request.url);\n\n  if (url.origin === self.location.origin && event.request.mode === 'navigate') {\n    event.respondWith(networkFirst(event.request));\n    return;\n  }\n\n  if (url.origin === self.location.origin) {\n    event.respondWith(staleWhileRevalidate(event.request, SHELL_CACHE));\n    return;\n  }\n\n  if (url.hostname === 'esm.sh') {\n    event.respondWith(staleWhileRevalidate(event.request, RUNTIME_CACHE));\n  }\n});\n`,
 );
 
 const indexHtml = join(dist, 'index.html');

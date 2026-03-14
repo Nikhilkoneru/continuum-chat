@@ -91,3 +91,5 @@ For direct Tailscale access, either run the API with `HOST=0.0.0.0` and use `htt
 The React web client is exported statically and deployed to GitHub Pages. The included workflow in `.github/workflows/deploy-pages.yml` builds `apps/client` and publishes it to Pages on every push to `main`.
 
 For hosted frontends, each user should open the app's connection settings and paste their own daemon URL. For Tailscale-backed setups, prefer an HTTPS URL exposed through `tailscale serve`, for example `https://your-mac.tailnet.ts.net`.
+
+The client is also configured as a PWA. After the site loads once, the app shell and React runtime are cached by the service worker, and supported browsers can install it like an app. On iPhone/iPad Safari, use `Share -> Add to Home Screen`.
