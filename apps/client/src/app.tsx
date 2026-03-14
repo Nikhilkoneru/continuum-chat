@@ -230,6 +230,8 @@ export default function App() {
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
+  selectedChatIdRef.current = selectedChatId;
 
   const defaultModel = models[0]?.id ?? 'gpt-5-mini';
   const suggestedApiUrl = health?.tailscaleApiUrl ?? health?.publicApiUrl ?? health?.apiOrigin ?? null;
@@ -424,7 +426,7 @@ export default function App() {
       }
 
       const nextSelectedChatId =
-        (selectedChatId && threadsPayload.threads.some((thread) => thread.id === selectedChatId) ? selectedChatId : undefined) ??
+        (selectedChatIdRef.current && threadsPayload.threads.some((thread) => thread.id === selectedChatIdRef.current) ? selectedChatIdRef.current : undefined) ??
         threadsPayload.threads[0]?.id ??
         null;
 
@@ -441,7 +443,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [ensureInitialThread, loadThreadDetail, selectedChatId, session, signOut]);
+  }, [ensureInitialThread, loadThreadDetail, session, signOut]);
 
   useEffect(() => {
     if (!isRestoring) {
