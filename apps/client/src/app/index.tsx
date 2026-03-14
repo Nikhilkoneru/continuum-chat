@@ -657,6 +657,79 @@ export default function HomeScreen() {
     );
   };
 
+  const connectionSettingsModal = (
+    <Modal
+      animationType="fade"
+      transparent
+      visible={connectionSettingsVisible}
+      onRequestClose={() => setConnectionSettingsVisible(false)}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.sheetCard}>
+          <Text style={styles.modalTitle}>Connection</Text>
+          <Text style={styles.modalBody}>
+            Point this frontend at your own daemon service. For GitHub Pages or any hosted frontend, use your daemon&apos;s
+            Tailscale HTTPS URL.
+          </Text>
+          <Text style={styles.modalLabel}>Daemon URL</Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="https://your-mac.tailnet.ts.net"
+            placeholderTextColor="#64748b"
+            value={apiUrlInput}
+            onChangeText={setApiUrlInput}
+            style={styles.modalInput}
+          />
+          <Text style={styles.helperText}>Default: {getDefaultApiUrl()}</Text>
+          <Text style={styles.helperText}>LAN example: http://192.168.x.y:4000</Text>
+          <Text style={styles.helperText}>Tailscale example: https://your-mac.tailnet.ts.net</Text>
+          {suggestedApiUrl ? <Text style={styles.helperText}>Suggested by daemon: {suggestedApiUrl}</Text> : null}
+          {savedApiUrlOverride ? <Text style={styles.helperText}>Saved override active</Text> : null}
+          <View style={styles.modalActions}>
+            {suggestedApiUrl ? (
+              <Pressable
+                style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
+                onPress={() => setApiUrlInput(suggestedApiUrl)}
+                disabled={savingConnection}
+              >
+                <Text style={styles.secondaryButtonText}>Use suggested URL</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
+              onPress={() => {
+                setConnectionSettingsVisible(false);
+              }}
+              disabled={savingConnection}
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
+              onPress={() => {
+                void handleResetConnection();
+              }}
+              disabled={savingConnection}
+            >
+              <Text style={styles.secondaryButtonText}>Use default</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, savingConnection && styles.disabledButton]}
+              onPress={() => {
+                void handleSaveConnection();
+              }}
+              disabled={savingConnection}
+            >
+              <Text style={styles.primaryButtonText}>{savingConnection ? 'Saving...' : 'Save'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (!session) {
     return (
       <Screen>
@@ -692,6 +765,7 @@ export default function HomeScreen() {
             </Pressable>
           </View>
         </View>
+        {connectionSettingsModal}
       </Screen>
     );
   }
@@ -950,76 +1024,7 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={connectionSettingsVisible}
-        onRequestClose={() => setConnectionSettingsVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.sheetCard}>
-            <Text style={styles.modalTitle}>Connection</Text>
-            <Text style={styles.modalBody}>
-              Point this frontend at your own daemon service. For GitHub Pages or any hosted frontend, use your daemon's
-              Tailscale HTTPS URL.
-            </Text>
-            <Text style={styles.modalLabel}>Daemon URL</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              placeholder="https://your-mac.tailnet.ts.net"
-              placeholderTextColor="#64748b"
-              value={apiUrlInput}
-              onChangeText={setApiUrlInput}
-              style={styles.modalInput}
-            />
-            <Text style={styles.helperText}>Default: {getDefaultApiUrl()}</Text>
-            <Text style={styles.helperText}>LAN example: http://192.168.x.y:4000</Text>
-            <Text style={styles.helperText}>Tailscale example: https://your-mac.tailnet.ts.net</Text>
-            {suggestedApiUrl ? <Text style={styles.helperText}>Suggested by daemon: {suggestedApiUrl}</Text> : null}
-            {savedApiUrlOverride ? <Text style={styles.helperText}>Saved override active</Text> : null}
-            <View style={styles.modalActions}>
-              {suggestedApiUrl ? (
-                <Pressable
-                  style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
-                  onPress={() => setApiUrlInput(suggestedApiUrl)}
-                  disabled={savingConnection}
-                >
-                  <Text style={styles.secondaryButtonText}>Use suggested URL</Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
-                onPress={() => {
-                  setConnectionSettingsVisible(false);
-                }}
-                disabled={savingConnection}
-              >
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.secondaryButton, savingConnection && styles.disabledButton]}
-                onPress={() => {
-                  void handleResetConnection();
-                }}
-                disabled={savingConnection}
-              >
-                <Text style={styles.secondaryButtonText}>Use default</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.primaryButton, savingConnection && styles.disabledButton]}
-                onPress={() => {
-                  void handleSaveConnection();
-                }}
-                disabled={savingConnection}
-              >
-                <Text style={styles.primaryButtonText}>{savingConnection ? 'Saving...' : 'Save'}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {connectionSettingsModal}
 
       <Modal animationType="fade" transparent visible={modelPickerVisible} onRequestClose={() => setModelPickerVisible(false)}>
         <View style={styles.modalBackdrop}>
