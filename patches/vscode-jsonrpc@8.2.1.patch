@@ -1,8 +1,8 @@
 diff --git a/package.json b/package.json
-index d0080b2ad03f6471915c5527bfd11debbbffeefa..51452b667f91717c5df10470e46d0019fb33305c 100644
+index d0080b2ad03f6471915c5527bfd11debbbffeefa..b1d317b861665c0d30fddc14c12465125d6d2a37 100644
 --- a/package.json
 +++ b/package.json
-@@ -1,45 +1,62 @@
+@@ -1,45 +1,76 @@
  {
 -	"name": "vscode-jsonrpc",
 -	"description": "A json rpc implementation over streams",
@@ -94,9 +94,14 @@ index d0080b2ad03f6471915c5527bfd11debbbffeefa..51452b667f91717c5df10470e46d0019
 +    ".": {
 +      "import": "./lib/node/main.js",
 +      "require": "./lib/node/main.js",
-+      "types": "./lib/node/main.d.ts"
++      "types": "./lib/common/api.d.ts"
 +    },
 +    "./node": {
++      "import": "./node.js",
++      "require": "./node.js",
++      "types": "./node.d.ts"
++    },
++    "./node.js": {
 +      "import": "./node.js",
 +      "require": "./node.js",
 +      "types": "./node.d.ts"
@@ -105,6 +110,15 @@ index d0080b2ad03f6471915c5527bfd11debbbffeefa..51452b667f91717c5df10470e46d0019
 +      "import": "./browser.js",
 +      "require": "./browser.js",
 +      "types": "./browser.d.ts"
++    },
++    "./browser.js": {
++      "import": "./browser.js",
++      "require": "./browser.js",
++      "types": "./browser.d.ts"
++    },
++    "./lib/*": {
++      "import": "./lib/*",
++      "require": "./lib/*"
 +    }
 +  }
  }
