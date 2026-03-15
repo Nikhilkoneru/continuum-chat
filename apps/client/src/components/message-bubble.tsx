@@ -90,8 +90,9 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
 
         {toolActivities.length ? (
           <div className="tool-activity-list">
-            {toolActivities.map((activity) => (
-              <section key={activity.id} className={`tool-activity tool-activity--${activity.status}`}>
+            {toolActivities.map((activity) => {
+              const isRunning = activity.status === 'running';
+              const header = (
                 <div className="tool-activity-header">
                   <div className="tool-activity-title-row">
                     <span className={`tool-activity-indicator tool-activity-indicator--${activity.status}`} aria-hidden="true" />
@@ -100,46 +101,69 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
                   </div>
                   <time className="tool-activity-time">{formatTime(activity.updatedAt)}</time>
                 </div>
+              );
 
-                <div className="tool-activity-summary">{summarizeToolActivity(activity)}</div>
+              const body = (
+                <>
+                  <div className="tool-activity-summary">{summarizeToolActivity(activity)}</div>
 
-                {activity.permissionDecision || activity.permissionDecisionReason || activity.suppressed ? (
-                  <div className="tool-activity-note">
-                    {activity.permissionDecision ? `Permission: ${activity.permissionDecision}` : 'Permission update'}
-                    {activity.permissionDecisionReason ? ` - ${activity.permissionDecisionReason}` : ''}
-                    {activity.suppressed ? ' - hidden from assistant output' : ''}
-                  </div>
-                ) : null}
+                  {activity.permissionDecision || activity.permissionDecisionReason || activity.suppressed ? (
+                    <div className="tool-activity-note">
+                      {activity.permissionDecision ? `Permission: ${activity.permissionDecision}` : 'Permission update'}
+                      {activity.permissionDecisionReason ? ` - ${activity.permissionDecisionReason}` : ''}
+                      {activity.suppressed ? ' - hidden from assistant output' : ''}
+                    </div>
+                  ) : null}
 
-                {activity.arguments ? (
-                  <div className="tool-activity-section">
-                    <div className="tool-activity-label">Arguments</div>
-                    <pre className="tool-activity-payload">{formatToolPayload(activity.arguments)}</pre>
-                  </div>
-                ) : null}
+                  {activity.arguments ? (
+                    <div className="tool-activity-section">
+                      <div className="tool-activity-label">Arguments</div>
+                      <pre className="tool-activity-payload">{formatToolPayload(activity.arguments)}</pre>
+                    </div>
+                  ) : null}
 
-                {activity.additionalContext ? (
-                  <div className="tool-activity-section">
-                    <div className="tool-activity-label">Progress</div>
-                    <div className="tool-activity-text">{activity.additionalContext}</div>
-                  </div>
-                ) : null}
+                  {activity.additionalContext ? (
+                    <div className="tool-activity-section">
+                      <div className="tool-activity-label">Progress</div>
+                      <div className="tool-activity-text">{activity.additionalContext}</div>
+                    </div>
+                  ) : null}
 
-                {activity.result ? (
-                  <div className="tool-activity-section">
-                    <div className="tool-activity-label">Result</div>
-                    <pre className="tool-activity-payload">{formatToolPayload(activity.result)}</pre>
-                  </div>
-                ) : null}
+                  {activity.result ? (
+                    <div className="tool-activity-section">
+                      <div className="tool-activity-label">Result</div>
+                      <pre className="tool-activity-payload">{formatToolPayload(activity.result)}</pre>
+                    </div>
+                  ) : null}
 
-                {activity.error ? (
-                  <div className="tool-activity-section">
-                    <div className="tool-activity-label">Error</div>
-                    <div className="tool-activity-text tool-activity-text--error">{activity.error}</div>
-                  </div>
-                ) : null}
-              </section>
-            ))}
+                  {activity.error ? (
+                    <div className="tool-activity-section">
+                      <div className="tool-activity-label">Error</div>
+                      <div className="tool-activity-text tool-activity-text--error">{activity.error}</div>
+                    </div>
+                  ) : null}
+                </>
+              );
+
+              // Running tools stay expanded; completed/failed collapse into a <details>
+              if (isRunning) {
+                return (
+                  <section key={activity.id} className={`tool-activity tool-activity--running`}>
+                    {header}
+                    {body}
+                  </section>
+                );
+              }
+
+              return (
+                <details key={activity.id} className={`tool-activity tool-activity--${activity.status}`}>
+                  <summary className="tool-activity-collapse-summary">
+                    {header}
+                  </summary>
+                  {body}
+                </details>
+              );
+            })}
           </div>
         ) : null}
 

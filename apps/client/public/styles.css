@@ -510,6 +510,42 @@ button { cursor: pointer; }
   gap: 8px;
 }
 
+/* Collapsible completed/failed tool calls */
+details.tool-activity {
+  display: block;
+  cursor: pointer;
+}
+
+details.tool-activity > .tool-activity-collapse-summary {
+  display: block;
+  list-style: none;
+  outline: none;
+}
+
+details.tool-activity > .tool-activity-collapse-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.tool-activity > .tool-activity-collapse-summary .tool-activity-header::after {
+  content: '▸';
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+details.tool-activity[open] > .tool-activity-collapse-summary .tool-activity-header::after {
+  transform: rotate(90deg);
+}
+
+details.tool-activity:not([open]) {
+  padding-bottom: 10px;
+}
+
+details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
+  margin-top: 4px;
+}
+
 .tool-activity--running {
   border-color: rgba(56, 139, 253, 0.25);
   background: rgba(56, 139, 253, 0.08);
