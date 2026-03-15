@@ -92,12 +92,6 @@ async fn stream_chat(
     let model = body.model.as_deref().unwrap_or(&thread.model).to_string();
     let reasoning_effort = body.reasoning_effort.clone().or(thread.reasoning_effort.clone());
 
-    // Determine ACP session ID
-    let session_id = thread
-        .copilot_session_id
-        .clone()
-        .unwrap_or_else(|| format!("thread-{}", thread.id));
-
     // Update thread metadata
     let title_preview = if prompt.len() > 42 {
         format!("{}...", &prompt[..42])
@@ -113,7 +107,6 @@ async fn stream_chat(
         Some(&model),
         reasoning_effort.as_ref().map(|r| Some(r.as_str())),
     );
-    thread_store::update_thread_session(&state.db, &thread.id, &session_id);
     thread_store::update_thread_preview(&state.db, &thread.id, &prompt);
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(256);
@@ -121,9 +114,6 @@ async fn stream_chat(
     let thread_id = thread.id.clone();
 
     tokio::spawn(async move {
-        // Send session event
-        let _ = tx.send(Ok(make_event(&json!({ "type": "session", "sessionId": session_id })))).await;
-
         // Connect to Copilot ACP
         let conn = match state_clone.copilot.get_or_create_connection().await {
             Ok(c) => c,
@@ -134,23 +124,27 @@ async fn stream_chat(
             }
         };
 
-        // Create or load session
-        let acp_session_id = if thread.copilot_session_id.is_some() {
-            // Try loading existing session
-            match conn.load_session(&session_id).await {
-                Ok(_) => session_id.clone(),
-                Err(_) => {
-                    // Fall back to new session
-                    match conn.new_session().await {
-                        Ok(id) => {
-                            thread_store::update_thread_session(&state_clone.db, &thread_id, &id);
-                            id
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to create session: {e}") })))).await;
-                            let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
-                            return;
-                        }
+        // Determine ACP session: reuse existing or create new
+        let acp_session_id = if let Some(ref existing_id) = thread.copilot_session_id {
+            // Session already exists — just reuse the ID.
+            // The ACP agent maintains session state in-memory.
+            // Only fall back to new session if the connection was recycled.
+            if conn.is_alive().await {
+                tracing::info!("Reusing ACP session: {existing_id}");
+                let _ = tx.send(Ok(make_event(&json!({ "type": "session", "sessionId": existing_id })))).await;
+                existing_id.clone()
+            } else {
+                tracing::info!("ACP connection dead, creating new session");
+                match conn.new_session().await {
+                    Ok(id) => {
+                        thread_store::update_thread_session(&state_clone.db, &thread_id, &id);
+                        let _ = tx.send(Ok(make_event(&json!({ "type": "session", "sessionId": id })))).await;
+                        id
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to create session: {e}") })))).await;
+                        let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
+                        return;
                     }
                 }
             }
