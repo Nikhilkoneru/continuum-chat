@@ -17,7 +17,7 @@ After every code change, always complete these steps:
 ## Architecture
 
 - **Monorepo**: pnpm workspaces — `apps/api`, `apps/client`, `packages/shared`
-- **API**: Node.js + Express, ESM (`"type": "module"`), TypeScript compiled with Node16 module resolution. All relative imports must use `.js` extensions.
+- **API**: Node.js + Express, CJS (no "type" field), TypeScript compiled with CommonJS module resolution. Uses `new Function('return import(...)')()` to dynamically import the ESM-only `@github/copilot-sdk`.
 - **Client**: React SPA built with a custom `scripts/build.mjs` (no bundler). Served as static files from GitHub Pages.
 - **Shared types**: `packages/shared/src/index.ts` — contract between client and API
 - **Database**: Node.js built-in SQLite (experimental). Schema in `apps/api/src/db.ts`
@@ -27,7 +27,8 @@ After every code change, always complete these steps:
 
 - Runs on port 4000 (from `.env`)
 - Must bind to `0.0.0.0` (not `127.0.0.1`) for Tailscale access: `HOST=0.0.0.0`
-- Must use `--experimental-specifier-resolution=node` flag because the copilot-sdk is ESM but its dep vscode-jsonrpc lacks an exports map
+- Uses `--experimental-specifier-resolution=node` flag for copilot-sdk ESM resolution
+- **vscode-jsonrpc ESM fix**: A pnpm patch (`patches/vscode-jsonrpc@8.2.1.patch`) adds an exports map to vscode-jsonrpc so the SDK's `import "vscode-jsonrpc/node"` resolves correctly. After `pnpm install`, this patch is auto-applied.
 - Start command: `HOST=0.0.0.0 node --experimental-specifier-resolution=node apps/api/dist/index.js`
 - Tailscale IP for this machine: check `tailscale status`
 
