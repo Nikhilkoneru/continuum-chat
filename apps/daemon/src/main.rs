@@ -3,6 +3,7 @@ mod config;
 mod copilot;
 mod db;
 mod error;
+mod remote_access;
 mod routes;
 mod runtime;
 mod service;
@@ -36,6 +37,8 @@ enum CommandGroup {
     Daemon(DaemonCommand),
     #[command(subcommand)]
     Run(RunCommand),
+    #[command(subcommand)]
+    RemoteAccess(RemoteAccessCommand),
     Open,
     Update(UpdateArgs),
 }
@@ -73,6 +76,22 @@ enum ServiceCommand {
     Print,
 }
 
+#[derive(Subcommand, Debug)]
+enum RemoteAccessCommand {
+    #[command(subcommand)]
+    Tailscale(TailscaleCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum TailscaleCommand {
+    Enable(TailscaleEnableArgs),
+    Disable,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Args, Debug, Clone, Default)]
 struct NetworkArgs {
     #[arg(long)]
@@ -99,6 +118,12 @@ struct UpdateArgs {
     force: bool,
     #[arg(long, default_value_t = false)]
     restart_service: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct TailscaleEnableArgs {
+    #[arg(long, default_value_t = 443)]
+    https_port: u16,
 }
 
 #[tokio::main]
@@ -170,6 +195,64 @@ async fn main() -> anyhow::Result<()> {
             ServiceCommand::Restart => service::restart(&config),
             ServiceCommand::Print => service::print_definition(&config),
         },
+        Some(CommandGroup::RemoteAccess(RemoteAccessCommand::Tailscale(command))) => {
+            match command {
+                TailscaleCommand::Enable(args) => {
+                    let status =
+                        remote_access::enable_tailscale_https(config.port, args.https_port)?;
+                    println!(
+                        "Tailscale HTTPS enabled at {}",
+                        status
+                            .serve_url
+                            .clone()
+                            .unwrap_or_else(|| config.preferred_ui_origin())
+                    );
+                    println!("Open it with: {} open", runtime::cli_name());
+                    Ok(())
+                }
+                TailscaleCommand::Disable => {
+                    if remote_access::disable_tailscale_https(config.port)? {
+                        println!("Removed gcpa-managed Tailscale Serve HTTPS config.");
+                    } else {
+                        println!("No Tailscale Serve config was active for this node.");
+                    }
+                    Ok(())
+                }
+                TailscaleCommand::Status { json } => {
+                    let status =
+                        remote_access::inspect_tailscale(config.port)?.ok_or_else(|| {
+                            anyhow::anyhow!("Tailscale is not available on this machine.")
+                        })?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&status)?);
+                    } else {
+                        println!(
+                            "Tailscale: {}",
+                            if status.running {
+                                "running"
+                            } else {
+                                "not running"
+                            }
+                        );
+                        if let Some(url) = status.direct_url {
+                            println!("Direct URL: {url}");
+                        }
+                        if let Some(url) = status.serve_url {
+                            println!("HTTPS URL: {url}");
+                        } else if status.running {
+                            println!(
+                                "HTTPS URL: not configured (run `{} remote-access tailscale enable`)",
+                                runtime::cli_name()
+                            );
+                        }
+                        if let Some(url) = status.preferred_url {
+                            println!("Preferred URL: {url}");
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
         Some(CommandGroup::Open) => {
             let url = config.preferred_ui_origin();
             runtime::open_browser(&url)?;
@@ -245,7 +328,7 @@ async fn serve(config: Config, started_at: String) -> anyhow::Result<()> {
     tracing::info!("gcpa daemon listening on http://{addr}");
     tracing::info!("Web UI available at {}", config.preferred_ui_origin());
     if let Some(ref url) = config.tailscale_api_url {
-        tracing::info!("Tailscale API URL: {url}");
+        tracing::info!("Tailscale URL: {url}");
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

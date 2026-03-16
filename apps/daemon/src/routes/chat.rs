@@ -222,7 +222,9 @@ async fn stream_chat(
             }
         };
 
-        let (acp_session_id, session_was_resumed) = if let Some(ref existing_id) = thread.copilot_session_id {
+        let (acp_session_id, session_was_resumed) = if let Some(ref existing_id) =
+            thread.copilot_session_id
+        {
             if conn.is_alive().await {
                 let _ = tx
                     .send(Ok(make_event(

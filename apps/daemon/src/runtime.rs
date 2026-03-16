@@ -128,8 +128,12 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
     let service_installed = service_definition_path.exists();
     let ui_access_url = config.preferred_ui_origin();
     let ui_access_hint = match config.remote_access_mode.as_str() {
+        "tailscale" if ui_access_url.starts_with("https://") => format!(
+            "Open {} in a browser on a device with Tailscale installed and signed into the same tailnet. Tailscale Serve is terminating HTTPS, and the same origin serves both the UI and /api.",
+            ui_access_url
+        ),
         "tailscale" => format!(
-            "Open {} in a browser on a device with Tailscale installed and signed into the same tailnet. The same origin serves both the UI and /api.",
+            "Open {} in a browser on a device with Tailscale installed and signed into the same tailnet. This is direct Tailscale HTTP to the daemon port; run `gcpa remote-access tailscale enable` to switch to HTTPS via Tailscale Serve.",
             ui_access_url
         ),
         _ => format!(
@@ -215,9 +219,15 @@ pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
                     .tailscale_api_url
                     .clone()
                     .map(|url| {
-                        format!(
-                            "{url} (install Tailscale on this machine and the customer device, then open the same URL there)"
-                        )
+                        if url.starts_with("https://") {
+                            format!(
+                                "{url} (secure Tailscale Serve HTTPS is active; install Tailscale on this machine and the customer device, then open the same URL there)"
+                            )
+                        } else {
+                            format!(
+                                "{url} (plain Tailscale HTTP direct to the daemon port; run `gcpa remote-access tailscale enable` for HTTPS)"
+                            )
+                        }
                     })
                     .unwrap_or_else(|| "Tailscale is not running or no Tailscale URL could be detected.".to_string()),
                 "public" => config
@@ -236,7 +246,9 @@ pub fn open_browser(url: &str) -> anyhow::Result<()> {
     let status = if cfg!(target_os = "macos") {
         Command::new("open").arg(url).status()?
     } else if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "start", "", url]).status()?
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .status()?
     } else {
         Command::new("xdg-open").arg(url).status()?
     };

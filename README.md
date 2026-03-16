@@ -60,6 +60,8 @@ Useful lifecycle commands:
 
 ```bash
 gcpa open
+gcpa remote-access tailscale status
+gcpa remote-access tailscale enable
 gcpa daemon service status
 gcpa daemon service restart
 gcpa update --check
@@ -73,10 +75,11 @@ For customer access across devices, install **Tailscale on the machine running `
 Once both devices are signed into the same tailnet:
 
 1. Start the daemon with `gcpa run daemon` or install the login service with `gcpa daemon service install`
-2. Run `gcpa open` on the host machine, or use the Tailscale URL shown in the Settings screen / `gcpa daemon doctor`
-3. Open that same Tailscale URL on the customer device
+2. Run `gcpa remote-access tailscale enable` once on the host machine to configure Tailscale Serve HTTPS for the daemon
+3. Use `gcpa open` on the host machine, or copy the secure URL shown by `gcpa remote-access tailscale status` / `gcpa daemon doctor`
+4. Open that same `https://<device>.ts.net` URL on the customer device
 
-The app is same-origin, so the UI and API stay aligned automatically when opened over Tailscale.
+`gcpa open` prefers the secure Tailscale Serve URL when it exists. The app is same-origin, so the UI and API stay aligned automatically when opened over Tailscale.
 
 ## Auto-start and service management
 

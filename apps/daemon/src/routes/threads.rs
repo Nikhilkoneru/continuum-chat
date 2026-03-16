@@ -326,7 +326,9 @@ fn replayed_messages_to_chat_messages(
                 .map(|tool_calls| tool_calls_to_activities(tool_calls, &created_at))
                 .filter(|tool_calls| !tool_calls.is_empty());
             let attachments = if replayed_message.role == "user" {
-                let attachments = attachment_sets_by_user_index.get(&user_message_index).cloned();
+                let attachments = attachment_sets_by_user_index
+                    .get(&user_message_index)
+                    .cloned();
                 user_message_index += 1;
                 attachments
             } else {
