@@ -44,7 +44,8 @@ pub struct DaemonRuntimeInfo {
     pub status_hint: String,
     pub logs_hint: String,
     pub update_hint: String,
-    pub ui_deploy_hint: String,
+    pub ui_access_url: String,
+    pub ui_access_hint: String,
     pub copilot: ToolStatus,
 }
 
@@ -69,6 +70,10 @@ pub fn cli_name() -> &'static str {
 
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+pub fn build_target() -> &'static str {
+    env!("GCPA_BUILD_TARGET")
 }
 
 pub fn service_name() -> &'static str {
@@ -113,32 +118,14 @@ pub fn windows_service_runner_path(config: &Config) -> PathBuf {
         .join("gcpa-daemon.cmd")
 }
 
-pub fn detect_project_root(start: &Path) -> Option<PathBuf> {
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        start.parent()?.to_path_buf()
-    };
-
-    loop {
-        if current.join("apps/client/scripts/build.mjs").exists()
-            && current.join("apps/daemon/Cargo.toml").exists()
-        {
-            return Some(current);
-        }
-
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
 pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInfo {
     let executable_path = env::current_exe()
         .map(|path| path_to_string(&path))
         .unwrap_or_else(|_| cli_name().to_string());
     let copilot = resolve_copilot_tool(config, true);
     let service_definition_path = service_definition_path(config);
+    let service_installed = service_definition_path.exists();
+    let ui_access_url = config.preferred_ui_origin();
     let logs_hint = if cfg!(target_os = "windows") {
         format!(
             "Get-Content -Path '{}' -Wait",
@@ -163,20 +150,21 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
         service_manager: service_manager_label().to_string(),
         service_name: service_name().to_string(),
         service_definition_path: path_to_string(&service_definition_path),
-        service_installed: service_definition_path.exists(),
-        control_surface: "web-settings + gcpa cli".to_string(),
+        service_installed,
+        control_surface: "bundled web ui + gcpa cli".to_string(),
         install_hint: format!("{} daemon service install", cli_name()),
         restart_hint: format!("{} daemon service restart", cli_name()),
         status_hint: format!("{} daemon service status", cli_name()),
         logs_hint,
-        update_hint: format!(
-            "Replace the {} binary with a newer release, then run '{} daemon service restart'.",
-            cli_name(),
-            cli_name()
-        ),
-        ui_deploy_hint: format!(
-            "{} ui deploy --repo OWNER/REPO --client-default-api-url https://your-daemon-url",
-            cli_name()
+        update_hint: if service_installed {
+            format!("{} update --restart-service", cli_name())
+        } else {
+            format!("{} update", cli_name())
+        },
+        ui_access_url: ui_access_url.clone(),
+        ui_access_hint: format!(
+            "Open {} in your browser. The same origin serves both the UI and /api.",
+            ui_access_url
         ),
         copilot,
     }
@@ -184,11 +172,6 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
 
 pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
     let runtime = build_runtime_info(config, started_at);
-    let project_root =
-        detect_project_root(&env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let git = resolve_named_tool("git", true);
-    let gh = resolve_named_tool("gh", true);
-    let node = resolve_named_tool("node", true);
 
     let checks = vec![
         DoctorCheck {
@@ -211,34 +194,24 @@ pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
             }),
         },
         DoctorCheck {
-            name: "git".to_string(),
-            ok: git.found,
-            detail: git
-                .path
-                .unwrap_or_else(|| "git not found in PATH".to_string()),
+            name: "bundled-web-ui".to_string(),
+            ok: true,
+            detail: runtime.ui_access_hint.clone(),
         },
         DoctorCheck {
-            name: "gh".to_string(),
-            ok: gh.found,
-            detail: gh
-                .path
-                .unwrap_or_else(|| "gh not found in PATH".to_string()),
-        },
-        DoctorCheck {
-            name: "node".to_string(),
-            ok: node.found,
-            detail: node
-                .path
-                .unwrap_or_else(|| "node not found in PATH".to_string()),
-        },
-        DoctorCheck {
-            name: "frontend-source".to_string(),
-            ok: project_root.is_some(),
-            detail: project_root
-                .map(|root| format!("Found UI source at {}", root.display()))
-                .unwrap_or_else(|| {
-                    "Run `gcpa ui deploy` from the repo or a child directory of it.".to_string()
-                }),
+            name: "remote-access".to_string(),
+            ok: config.is_remote_access_configured() || config.remote_access_mode == "local",
+            detail: match config.remote_access_mode.as_str() {
+                "tailscale" => config
+                    .tailscale_api_url
+                    .clone()
+                    .unwrap_or_else(|| "TAILSCALE_API_URL is not configured.".to_string()),
+                "public" => config
+                    .public_api_url
+                    .clone()
+                    .unwrap_or_else(|| "PUBLIC_API_URL is not configured.".to_string()),
+                _ => format!("Local UI/API URL: {}", config.api_origin()),
+            },
         },
     ];
 
@@ -254,10 +227,6 @@ pub fn resolve_copilot_command(config: &Config) -> anyhow::Result<PathBuf> {
             config.config_file_path.display()
         ),
     }
-}
-
-pub fn resolve_named_tool(binary_name: &str, include_version: bool) -> ToolStatus {
-    resolve_tool(None, binary_name, &[], include_version)
 }
 
 fn resolve_copilot_tool(config: &Config, include_version: bool) -> ToolStatus {

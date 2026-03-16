@@ -6,3 +6,4 @@ pub mod health;
 pub mod models;
 pub mod projects;
 pub mod threads;
+pub mod ui;

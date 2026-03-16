@@ -1,0 +1,53 @@
+name: Validate gcpa
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Shared typecheck
+        run: pnpm --filter @github-personal-assistant/shared typecheck
+
+      - name: Client typecheck
+        run: pnpm exec tsc -p apps/client/tsconfig.build.json --noEmit
+
+      - name: Build bundled client
+        run: node apps/client/scripts/build.mjs
+
+      - name: Build daemon
+        run: cargo build --manifest-path apps/daemon/Cargo.toml --bin gcpa
+
+      - name: Test daemon
+        run: cargo test --manifest-path apps/daemon/Cargo.toml

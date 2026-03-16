@@ -22,7 +22,15 @@ export const getDefaultApiUrl = () => {
       return configuredDefault.replace(/\/+$/, '');
     }
 
-    const { hostname, protocol } = window.location;
+    const { hostname, port, protocol, origin } = window.location;
+    if (protocol === 'http:' || protocol === 'https:') {
+      if ((hostname === 'localhost' || hostname === '127.0.0.1') && port !== '4000') {
+        return 'http://127.0.0.1:4000';
+      }
+
+      return origin.replace(/\/+$/, '');
+    }
+
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
       return 'http://127.0.0.1:4000';
     }

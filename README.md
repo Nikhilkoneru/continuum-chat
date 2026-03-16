@@ -18,9 +18,10 @@ This project is intentionally built as a **single-user daemon** running on your 
 `gcpa` is the product control plane:
 
 - `gcpa daemon ...` runs and manages the local backend
+- `gcpa update` installs the latest published CLI release for the current platform
 - the browser UI is the day-to-day conversation surface
-- the Settings modal is the lightweight in-app “menu” for version, lifecycle, log path, and deployment hints
-- `gcpa ui deploy ...` publishes the hosted frontend to a GitHub Pages repo
+- the Settings modal is the lightweight in-app “menu” for version, lifecycle, log path, update, and access hints
+- the daemon itself serves the bundled web UI and `/api` from the same origin
 
 ### App auth and Copilot runtime auth are separate
 
@@ -86,13 +87,19 @@ You can override the port directly from the CLI when needed:
 cargo run --manifest-path apps/daemon/Cargo.toml --bin gcpa -- daemon run --port 4310
 ```
 
-4. Start the web client:
+4. Open the app in your browser:
+
+```bash
+http://127.0.0.1:4000/
+```
+
+5. For frontend development only, you can still run the standalone dev server:
 
 ```bash
 pnpm dev:client:web
 ```
 
-This starts a small local static dev server that rebuilds the client when files change.
+That rebuilds the client on changes, but the product/default runtime is the daemon-served UI.
 
 ## Install / restart / update story
 
@@ -113,33 +120,24 @@ The auto-start implementation uses the native user-level service manager for eac
 
 The default config file path is `APP_SUPPORT_DIR/config/daemon.env`. If it does not exist yet, `gcpa daemon service install` will create one from the current resolved settings so the background service has a stable config source.
 
-The current update flow is intentionally simple and explicit: replace the `gcpa` binary with a newer build/release, then run `gcpa daemon service restart`. The app Settings modal also shows the exact restart/update command hints returned by `/api/health`.
+`gcpa update` downloads the newest published CLI release for your current target and replaces the current executable in place. If you installed the auto-start service, use `gcpa update --restart-service` so the background daemon restarts onto the new binary immediately.
 
-## Hosted frontend deploy flow
+Tagging a release such as `v0.1.0` triggers the release workflow, which builds platform-specific `gcpa` archives for:
 
-The same CLI can publish or update the hosted web UI in another repo:
+- macOS Apple Silicon (`aarch64-apple-darwin`)
+- macOS Intel (`x86_64-apple-darwin`)
+- Linux x86_64 (`x86_64-unknown-linux-gnu`)
+- Windows x86_64 (`x86_64-pc-windows-msvc`)
 
-```bash
-gcpa ui deploy --repo OWNER/REPO --client-default-api-url https://your-daemon-url
-```
-
-What it does:
-
-- builds `apps/client`
-- creates the target repo if needed
-- syncs the built static app into the target repo’s `docs/` directory
-- pushes the commit to the chosen branch
-- configures GitHub Pages to serve from `BRANCH:/docs` (unless `--skip-pages-config` is used)
-
-That gives you a safe deployment path for an existing repo without wiping unrelated files outside `docs/`.
+Those release assets are what `gcpa update` consumes.
 
 ## Runtime UX in the browser
 
 There is not a separate native tray/menu app in this build. Instead:
 
 - the browser/PWA is the primary user interface
-- the Settings modal shows daemon version, lifecycle mode, Copilot CLI detection, config/log paths, and the exact `gcpa` restart/update/deploy commands
-- connection settings still let the hosted frontend point at any daemon URL
+- the Settings modal shows daemon version, lifecycle mode, Copilot CLI detection, config/log paths, and the exact `gcpa` restart/update/open-UI commands
+- connection settings still let one UI instance point at another daemon URL when you explicitly want that
 
 That keeps the product simple while still giving users a discoverable place to find lifecycle instructions.
 
@@ -151,10 +149,9 @@ That keeps the product simple while still giving users a discoverable place to f
 - The frontend negotiates auth with the backend and creates a local session automatically in local mode.
 - For GitHub device-flow app auth, set `APP_AUTH_MODE=github-device` and `GITHUB_CLIENT_ID`.
 - For redirect-based GitHub OAuth app auth, set `APP_AUTH_MODE=github-oauth` plus `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `GITHUB_CALLBACK_URL`.
-- For hosted frontends such as GitHub Pages, set `CLIENT_DEFAULT_API_URL` to your Tailscale HTTPS URL so first load points at the daemon instead of `localhost`.
-- `TAILSCALE_API_URL` is the preferred static remote URL for this setup.
+- `TAILSCALE_API_URL` is the preferred remote URL when you want the daemon to advertise a stable Tailscale browser entrypoint.
 - `REMOTE_ACCESS_MODE` controls how the daemon advertises itself in `/api/health` (`local`, `tailscale`, or `public`).
 
-## PWA / Pages behavior
+## Bundled UI behavior
 
-The React web client is exported statically and deployed to GitHub Pages. The in-repo workflow in `.github/workflows/deploy-pages.yml` still builds `apps/client` and publishes it to Pages on every push to `main`, and `gcpa ui deploy` can publish the same UI to another repo’s `docs/` directory when you want a separate hosted frontend repo.
+The React client is still exported as static files, but those files are now bundled into the `gcpa` binary at build time and served directly by the daemon. That keeps the frontend and backend version-matched, avoids cross-origin drift, and means the same local/Tailscale/public daemon URL serves both the UI shell and `/api`.

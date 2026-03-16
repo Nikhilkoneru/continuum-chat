@@ -62,7 +62,8 @@ export type DaemonRuntimeInfo = {
   statusHint: string;
   logsHint: string;
   updateHint: string;
-  uiDeployHint: string;
+  uiAccessUrl: string;
+  uiAccessHint: string;
   copilot: DaemonToolStatus;
 };
 

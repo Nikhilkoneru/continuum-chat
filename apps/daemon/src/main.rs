@@ -8,7 +8,7 @@ mod runtime;
 mod service;
 mod state;
 mod store;
-mod ui_deploy;
+mod update;
 
 use std::net::SocketAddr;
 
@@ -36,18 +36,12 @@ enum CommandGroup {
     Daemon(DaemonCommand),
     #[command(subcommand)]
     Run(RunCommand),
-    #[command(subcommand)]
-    Ui(UiCommand),
+    Update(UpdateArgs),
 }
 
 #[derive(Subcommand, Debug)]
 enum RunCommand {
     Daemon(NetworkArgs),
-}
-
-#[derive(Subcommand, Debug)]
-enum UiCommand {
-    Deploy(UiDeployArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -95,19 +89,15 @@ struct ServiceInstallArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct UiDeployArgs {
+struct UpdateArgs {
     #[arg(long)]
-    repo: String,
-    #[arg(long, default_value = "main")]
-    branch: String,
-    #[arg(long, default_value = "docs")]
-    target_dir: String,
-    #[arg(long)]
-    client_default_api_url: Option<String>,
-    #[arg(long)]
-    private_repo: bool,
-    #[arg(long)]
-    skip_pages_config: bool,
+    version: Option<String>,
+    #[arg(long, default_value_t = false)]
+    check: bool,
+    #[arg(long, default_value_t = false)]
+    force: bool,
+    #[arg(long, default_value_t = false)]
+    restart_service: bool,
 }
 
 #[tokio::main]
@@ -179,16 +169,17 @@ async fn main() -> anyhow::Result<()> {
             ServiceCommand::Restart => service::restart(&config),
             ServiceCommand::Print => service::print_definition(&config),
         },
-        Some(CommandGroup::Ui(UiCommand::Deploy(args))) => {
-            let options = ui_deploy::UiDeployOptions {
-                repo: args.repo,
-                branch: args.branch,
-                target_dir: args.target_dir,
-                client_default_api_url: args.client_default_api_url,
-                private_repo: args.private_repo,
-                skip_pages_config: args.skip_pages_config,
-            };
-            ui_deploy::deploy_ui(&config, &options)
+        Some(CommandGroup::Update(args)) => {
+            update::run(
+                &config,
+                update::UpdateOptions {
+                    version: args.version,
+                    check: args.check,
+                    force: args.force,
+                    restart_service: args.restart_service,
+                },
+            )
+            .await
         }
     }
 }
@@ -239,11 +230,13 @@ async fn serve(config: Config, started_at: String) -> anyhow::Result<()> {
         .merge(routes::copilot_routes::router())
         .merge(routes::attachments::router())
         .merge(routes::chat::router())
+        .fallback(routes::ui::serve)
         .layer(cors)
         .with_state(state.clone());
 
     let addr = SocketAddr::new(config.host.parse()?, config.port);
     tracing::info!("gcpa daemon listening on http://{addr}");
+    tracing::info!("Web UI available at {}", config.preferred_ui_origin());
     if let Some(ref url) = config.tailscale_api_url {
         tracing::info!("Tailscale API URL: {url}");
     }

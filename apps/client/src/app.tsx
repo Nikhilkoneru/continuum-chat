@@ -1196,12 +1196,12 @@ export default function App() {
     <div className="modal-backdrop" onClick={() => setConnectionSettingsVisible(false)}>
       <div className="sheet-card narrow" onClick={(event) => event.stopPropagation()}>
         <h2 className="modal-title">Connection settings</h2>
-        <p className="modal-copy">Point this frontend at your own daemon service. For hosted frontends, a Tailscale HTTPS URL works best.</p>
+        <p className="modal-copy">This app normally talks to the same daemon origin that served it. Change this only when you want to point the UI at a different daemon.</p>
         <label className="modal-label" htmlFor="daemon-url">Daemon URL</label>
         <input id="daemon-url" className="input" value={apiUrlInput} onChange={(event) => setApiUrlInput(event.target.value)} />
-        <div className="helper-text">Default: {getDefaultApiUrl()}</div>
-        <div className="helper-text">Tailscale example: https://your-mac.tailnet.ts.net</div>
-        <div className="helper-text">If you use a `.ts.net` URL, this browser device also needs to be connected to your Tailscale tailnet.</div>
+          <div className="helper-text">Default: {getDefaultApiUrl()}</div>
+          <div className="helper-text">Tailscale example: https://your-mac.tailnet.ts.net</div>
+          <div className="helper-text">If you use a `.ts.net` URL, this browser device also needs to be connected to your Tailscale tailnet.</div>
         {suggestedApiUrl ? <div className="helper-text">Suggested by daemon: {suggestedApiUrl}</div> : null}
         {savedApiUrlOverride ? <div className="helper-text">Saved override active</div> : null}
         <div className="modal-actions">
@@ -1287,8 +1287,9 @@ export default function App() {
             <div className="helper-text">Logs: {daemonRuntime.logPath}</div>
             <div className="helper-text">Restart: <code>{daemonRuntime.restartHint}</code></div>
             <div className="helper-text">Status: <code>{daemonRuntime.statusHint}</code></div>
-            <div className="helper-text">Update: {daemonRuntime.updateHint}</div>
-            <div className="helper-text">Deploy UI: <code>{daemonRuntime.uiDeployHint}</code></div>
+            <div className="helper-text">Update: <code>{daemonRuntime.updateHint}</code></div>
+            <div className="helper-text">UI URL: <code>{daemonRuntime.uiAccessUrl}</code></div>
+            <div className="helper-text">{daemonRuntime.uiAccessHint}</div>
           </div>
         ) : null}
         {!isStandalone ? <div className="install-note">On iPhone or iPad, open the browser share menu and choose <strong>Add to Home Screen</strong>.</div> : null}

@@ -110,7 +110,14 @@ impl Config {
     }
 
     pub fn api_origin(&self) -> String {
-        format!("http://{}:{}", self.host, self.port)
+        format!("http://{}:{}", self.browser_host(), self.port)
+    }
+
+    pub fn preferred_ui_origin(&self) -> String {
+        self.tailscale_api_url
+            .clone()
+            .or_else(|| self.public_api_url.clone())
+            .unwrap_or_else(|| self.api_origin())
     }
 
     pub fn is_copilot_configured(&self) -> bool {
@@ -190,6 +197,16 @@ impl Config {
         ];
         lines.push(String::new());
         lines.join("\n")
+    }
+}
+
+impl Config {
+    fn browser_host(&self) -> String {
+        match self.host.as_str() {
+            "" | "0.0.0.0" => "127.0.0.1".to_string(),
+            "::" => "[::1]".to_string(),
+            other => other.to_string(),
+        }
     }
 }
 
