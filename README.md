@@ -42,6 +42,61 @@ continuum update
 
 to upgrade in place from future releases.
 
+## Authentication model
+
+Continuum has **two separate authentication layers**.
+
+The first layer is **Continuum app auth** for opening and using the web UI itself. The daemon currently supports `local`, `github-device`, and `github-oauth` app auth modes. For the current self-hosted and single-user setup, `local` auth is the simplest and most heavily tested path.
+
+The second layer is **GitHub Copilot CLI auth** for actually creating ACP sessions and sending prompts to Copilot-backed models. Even if the Continuum UI loads successfully, chat will still fail if the underlying Copilot CLI is not authenticated.
+
+### Authenticate GitHub Copilot CLI
+
+For interactive use, the recommended setup is:
+
+```bash
+copilot login
+```
+
+GitHub's current Copilot CLI documentation recommends `copilot login` as the default interactive flow.
+
+Copilot CLI can also reuse an existing GitHub CLI login as a fallback when `gh` is installed and already authenticated:
+
+```bash
+gh auth status
+```
+
+If you prefer the `gh`-based path and are not already signed in, run:
+
+```bash
+gh auth login
+```
+
+Credential precedence matters. The following environment variables override stored Copilot CLI credentials and `gh` fallback reuse:
+
+- `COPILOT_GITHUB_TOKEN`
+- `GH_TOKEN`
+- `GITHUB_TOKEN`
+
+If one of them is set to the wrong account or an invalid token, Continuum may show Copilot auth failures even though `gh auth status` looks correct.
+
+### Recommended verification
+
+Before relying on the installed daemon, make sure Copilot auth and local daemon health are both in a good state:
+
+```bash
+copilot login
+gh auth status
+continuum daemon doctor
+curl -s http://127.0.0.1:4000/api/health
+```
+
+If the daemon is already running as a background service and you just changed Copilot or GitHub CLI authentication, restart it so the service picks up the current credential access:
+
+```bash
+continuum daemon service restart
+```
+
 ## Durable macOS install with Tailscale HTTPS
 
 If you want Continuum Chat to come back after daemon crashes and macOS restarts, install Tailscale first, then install Continuum as a login service.
@@ -58,29 +113,54 @@ tailscale status
 ```
 
 5. Install the Continuum CLI and place `continuum` on your `PATH`.
-6. Install the auto-start service and launch it immediately:
+6. Authenticate GitHub Copilot CLI:
+
+```bash
+copilot login
+```
+
+7. If you expect Copilot CLI to reuse GitHub CLI authentication, confirm that `gh` is signed in too:
+
+```bash
+gh auth status
+```
+
+8. Install the auto-start service and launch it immediately:
 
 ```bash
 continuum daemon service install --start-now
 ```
 
-7. Verify local health:
+9. Verify local health:
 
 ```bash
 curl -s http://127.0.0.1:4000/api/health
 continuum daemon doctor
 ```
 
-8. Turn on HTTPS access through Tailscale Serve:
+10. Turn on HTTPS access through Tailscale Serve:
 
 ```bash
 continuum remote-access tailscale enable
 continuum remote-access tailscale status
 ```
 
-9. Open the secure Tailscale URL shown by `continuum remote-access tailscale status` or `continuum daemon doctor`.
+11. Open the secure Tailscale URL shown by `continuum remote-access tailscale status` or `continuum daemon doctor`.
 
 On macOS, `continuum daemon service install --start-now` installs a `launchd` user service with `RunAtLoad` and `KeepAlive`, so Continuum comes back when you sign back in after a reboot and is restarted automatically if the daemon exits unexpectedly.
+
+### Copilot authentication troubleshooting
+
+If the UI loads but sending a chat fails with an error like `Authentication required`, Continuum itself is usually up, but the underlying Copilot CLI auth is not available to the daemon.
+
+The most common fixes are:
+
+1. Run `copilot login`
+2. Check `gh auth status` if you depend on GitHub CLI fallback
+3. Check whether `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` are overriding the expected account
+4. Restart the installed daemon service with `continuum daemon service restart`
+
+If the daemon is running as a background service, remember that service environments can behave differently from your interactive shell. A login that works in a terminal still needs to be reachable from the installed daemon process.
 
 ## Package manager status
 
@@ -146,8 +226,9 @@ For the macOS host machine, the recommended order is:
 1. Install Tailscale from `https://tailscale.com/download`
 2. Launch it and complete sign-in / sign-up in the browser
 3. Confirm the Mac is connected to your tailnet
-4. Install Continuum and run `continuum daemon service install --start-now`
-5. Run `continuum remote-access tailscale enable`
+4. Install Continuum and authenticate Copilot CLI with `copilot login`
+5. Install the login service with `continuum daemon service install --start-now`
+6. Run `continuum remote-access tailscale enable`
 
 Once both devices are signed into the same tailnet:
 
