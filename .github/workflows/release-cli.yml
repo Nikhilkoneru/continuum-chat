@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
+          cp apps/daemon/target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
           tar -C dist/${{ matrix.target }} -czf dist/gcpa-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
 
       - name: Package windows archive
@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/${{ matrix.target }} | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
+          Copy-Item apps/daemon/target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
           Compress-Archive -Path dist/${{ matrix.target }}/${{ matrix.binary }} -DestinationPath dist/gcpa-${{ matrix.target }}.zip -Force
 
       - name: Upload packaged artifact
