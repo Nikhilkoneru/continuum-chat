@@ -17,7 +17,17 @@ const defaultApiUrl =
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
-execFileSync('pnpm', ['exec', 'tsc', '-p', tsconfig], { cwd: root, stdio: 'inherit' });
+
+const resolvePnpmCommand = () => {
+  const override = process.env.PNPM_BINARY?.trim();
+  if (override) {
+    return override;
+  }
+
+  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+};
+
+execFileSync(resolvePnpmCommand(), ['exec', 'tsc', '-p', tsconfig], { cwd: root, stdio: 'inherit' });
 cpSync(publicDir, dist, { recursive: true });
 
 const collectFiles = (dir) => {
