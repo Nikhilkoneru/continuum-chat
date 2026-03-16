@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const root = join(__dirname, '..');
 const dist = join(root, 'dist');
 const publicDir = join(root, 'public');
@@ -17,17 +19,8 @@ const defaultApiUrl =
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
-
-const resolvePnpmCommand = () => {
-  const override = process.env.PNPM_BINARY?.trim();
-  if (override) {
-    return override;
-  }
-
-  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-};
-
-execFileSync(resolvePnpmCommand(), ['exec', 'tsc', '-p', tsconfig], { cwd: root, stdio: 'inherit' });
+const tscEntrypoint = require.resolve('typescript/bin/tsc');
+execFileSync(process.execPath, [tscEntrypoint, '-p', tsconfig], { cwd: root, stdio: 'inherit' });
 cpSync(publicDir, dist, { recursive: true });
 
 const collectFiles = (dir) => {
