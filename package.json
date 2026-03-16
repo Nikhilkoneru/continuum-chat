@@ -5,15 +5,10 @@
   "scripts": {
     "dev:client": "pnpm --filter client start",
     "dev:client:web": "pnpm --filter client web",
-    "dev:api": "pnpm --filter api dev",
+    "dev:daemon": "cargo run --manifest-path apps/daemon/Cargo.toml",
     "build:web": "pnpm --filter client export:web",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint"
-  },
-  "pnpm": {
-    "patchedDependencies": {
-      "vscode-jsonrpc@8.2.1": "patches/vscode-jsonrpc@8.2.1.patch"
-    }
   }
 }

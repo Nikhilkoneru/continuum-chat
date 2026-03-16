@@ -6,6 +6,5 @@ node_modules
 .expo-shared
 apps/client/.expo
 apps/client/dist
-apps/api/dist
 *.log
 .DS_Store

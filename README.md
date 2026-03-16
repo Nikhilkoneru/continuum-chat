@@ -1,39 +1,25 @@
 # Github Personal Assistant
 
-Mac-hosted personal developer assistant with a React web client, a Node API, lightweight local metadata storage, and GitHub Copilot SDK-driven chat sessions.
+Mac-hosted personal developer assistant with a React web client, a Rust daemon, local SQLite metadata, and GitHub Copilot conversations powered through ACP.
 
-This project is currently designed around a **single-user daemon** running on your Mac. The web UI is a remote shell for that daemon, not a multi-tenant SaaS product.
-
-## What this product is now
-
-The current product model is:
-
-- one daemon owner
-- one durable set of chats, projects, attachments, and history
-- backend-driven auth negotiation
-- Copilot SDK as the runtime chat engine
-- local-first storage on the Mac host
-
-Projects currently behave like **lightweight grouping only**. Chats are the primary surface; projects are just a way to organize related threads without adding extra runtime behavior.
+This project is intentionally built as a **single-user daemon** running on your Mac. The frontend is a remote shell for that daemon, not a multi-tenant SaaS app.
 
 ## Workspace
 
-- `apps/client` — static React web client and PWA shell
-- `apps/api` — Express + TypeScript API with SQLite metadata persistence, auth/session handling, attachment processing, and Copilot SDK chat orchestration
-- `packages/shared` — shared API and app types
+- `apps/client` -- static React web client and PWA shell
+- `apps/daemon` -- Rust + Axum backend that exposes the app API and talks to Copilot over ACP
+- `packages/shared` -- shared TypeScript API shapes used by the client
 
 ## Current architecture
 
 ### Single-user daemon-owner model
 
-The app is intentionally built for a single user.
+The app is designed around one durable daemon owner.
 
 - the daemon owns the durable data
 - app auth controls access to the daemon
 - app auth does **not** decide data ownership
 - switching auth modes should not fork or hide history
-
-This is why the backend was moved away from a GitHub-user-centric ownership model and toward one stable daemon-owner identity.
 
 ### App auth and Copilot runtime auth are separate
 
@@ -52,347 +38,63 @@ Copilot runtime auth currently supports:
 
 - logged-in local Copilot/GitHub user on the Mac
 - explicit GitHub token override
-- external Copilot CLI URL
+- external Copilot CLI URL when configured
 
 For this product, `APP_AUTH_MODE=local` is the recommended default.
-
-## Current UI direction
-
-The UI has been evolving toward:
-
-- a lighter, denser chat-first shell
-- a sticky header + sticky composer
-- only the message region owning scroll
-- fewer filler labels and less wasted vertical space
-- projects acting as grouping rather than a dominant dashboard
-
-Recent UX changes already implemented include:
-
-- compact header and composer
-- model picker moved to the top header
-- bottom composer reduced to attachment + send controls
-- denser sidebar with less visual weight so more chats are visible
-- PWA update-ready banner support
-
-Near-term UX direction that is **desired but not fully implemented yet**:
-
-- make the sidebar even more list-like and less panel-heavy
-- make moving chats between projects very easy
-- treat projects explicitly as organizational grouping instead of a heavyweight primary surface
 
 ## Current capabilities
 
 - Single-user local auth with automatic session bootstrap plus optional GitHub device/OAuth sign-in
 - Backend-advertised auth capabilities via `/api/auth/capabilities`
 - Durable SQLite-backed app metadata for sessions, projects, threads, preferences, and attachments
-- Copilot SDK session history used as the source of truth for chat replay, reasoning, tool activity, and usage
-- Streaming chat route with real Copilot errors surfaced inline
-- Backend-managed model listing from the Copilot SDK
-- Copilot SDK status/session inspection plus deletion via `/api/copilot/status` and `/api/copilot/sessions/:sessionId`
-- Rich Copilot model metadata including capabilities, billing, policy, and reasoning-effort support
-- Copilot infinite-session configuration with app-owned SDK tools for thread attachments
+- ACP session history used as the source of truth for chat replay, reasoning, tool activity, and usage
+- Streaming chat route with Copilot errors surfaced inline
+- Model listing and Copilot status endpoints
+- Copilot session inspection and deletion endpoints
 - Local file attachments stored on the Mac host
-- Thread-local uploads stored and reused locally
 - Hosted frontend default daemon URL injection for GitHub Pages
 - Service-worker cache fingerprinting so old app shells are invalidated on deploy
 - Forced PWA shell updates so fresh deployments take over immediately
 
-## How Copilot is managing state here
+## Data and state
 
-There are **two layers of Copilot-related state** in this setup.
+There are two persistence layers in this setup.
 
-### 1. General Copilot CLI state
+### 1. App-owned metadata
 
-The Copilot CLI itself keeps state under `~/.copilot/`.
+The daemon stores app-owned data under `APP_SUPPORT_DIR`, which defaults to:
 
-Examples found on this machine:
+- macOS: `~/Library/Application Support/github-personal-assistant/`
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/github-personal-assistant/`
+- Windows: `%APPDATA%/github-personal-assistant/`
 
-- `~/.copilot/command-history-state.json`
-- `~/.copilot/ide/...`
-- `~/.copilot/pkg/universal/.../copilot-sdk`
-- `~/.copilot/session-state/<session-id>/...`
+Important paths include:
 
-Those session-state folders can contain things like:
+- `data/assistant.sqlite` -- projects, threads, preferences, auth sessions, and attachment metadata
+- `media/` -- uploaded attachment files
 
-- `workspace.yaml`
-- `events.jsonl`
-- `checkpoints/`
-- `files/`
-- sometimes a small per-session `session.db`
+### 2. Copilot runtime state
 
-### 2. App-configured headless Copilot state
+The daemon talks to Copilot through ACP (`copilot --acp --stdio`). Transcript history is replayed from ACP sessions when the client loads a thread, so the Copilot runtime remains the source of truth for message content while SQLite stores only app-owned metadata.
 
-This app also tells the Copilot SDK where to persist headless session state.
+## API surface
 
-In `apps/api/src/config.ts`, the default config is:
+The Rust daemon serves the routes the frontend depends on, including:
 
-- `COPILOT_CONFIG_DIR = ~/Library/Application Support/github-personal-assistant/copilot`
-- `COPILOT_WORKING_DIRECTORY = process.cwd()` unless overridden
-
-Because of that, the app-specific headless state currently lives under:
-
-- `~/Library/Application Support/github-personal-assistant/copilot/`
-
-That directory contains:
-
-- `session-store.db`
-- `session-state/thread-.../`
-
-The per-thread workspace folders contain:
-
-- `workspace.yaml`
-- `events.jsonl`
-- `checkpoints/`
-- `files/`
-- sometimes `research/`
-
-The important point is:
-
-> Copilot SDK is not secretly inventing some separate hidden product database for this app. We are explicitly configuring where persistent session state should live, and the app-owned headless session store is currently under `Application Support/github-personal-assistant/copilot/`.
-
-### What the app is doing with the SDK
-
-The app currently:
-
-- starts a `CopilotClient`
-- reuses or resumes sessions per thread
-- enables infinite sessions
-- streams assistant output over SSE
-- exposes custom tools back into the session
-- persists app-side thread/message history separately in the app database
-
-Current SDK integration is centered in:
-
-- `apps/api/src/services/copilot.ts`
-- `apps/api/src/routes/chat.ts`
-- `apps/api/src/routes/copilot.ts`
-
-## How PDFs are processed right now
-
-PDF handling is already local-first.
-
-### On upload
-
-When a PDF is uploaded, the backend immediately extracts a local PDF context.
-
-Current behavior:
-
-1. the file is stored on disk under the app media directory
-2. the backend runs PDF extraction locally
-3. extracted context is stored as JSON beside the attachment metadata
-
-### Extraction pipeline
-
-The PDF pipeline lives in `apps/api/src/services/pdf.ts`.
-
-It currently does:
-
-- try native PDF text extraction first using `pdfjs-dist`
-- check whether the extracted page text is meaningful
-- if not meaningful, render that page to an image
-- run Tesseract OCR on the rendered page
-- store page-by-page extracted text plus extraction type
-
-Possible extraction results:
-
-- `native`
-- `ocr`
-- `mixed`
-
-This means scanned PDFs already work locally as long as Tesseract is available on the machine.
-
-### How that context is used
-
-For thread attachments:
-
-- PDF context is formatted into prompt context locally
-- the backend injects relevant PDF excerpts into the Copilot prompt
-
-Projects do not add a separate knowledge layer anymore.
-
-- attachments remain thread-local
-- project assignment is just grouping
-- no RagFlow service is used in the current implementation
-
-## Copilot SDK integration: current adoption
-
-The current implementation already adopts a meaningful part of the SDK:
-
-- client lifecycle and startup
-- session create/resume
-- infinite sessions
-- model listing
-- status/auth overview
-- session listing and deletion
-- SSE streaming with:
-  - `assistant.message_delta`
-  - `assistant.reasoning_delta`
-  - `assistant.reasoning`
-  - `assistant.usage`
-  - tool execution activity
-  - `ask_user`-style user input requests
-- `session.getMessages()`-backed replay for thread detail
-- app-owned custom tools:
-  - `list_thread_attachments`
-
-It also uses:
-
-- model selection
-- per-thread reasoning-effort config
-- system-message injection
-- session reuse tied to app thread IDs
-- SDK session history as the canonical chat/event log, with SQLite only storing app-owned metadata and previews
-
-## Copilot SDK features still worth adopting
-
-The SDK surface is broader than what is currently wired. The most relevant remaining opportunities for this product are:
-
-### High priority
-
-- richer hook-driven audit/automation beyond the current activity surface
-- more deliberate interactive permission UX beyond the daemon-level approval policy
-- better image/vision handling for models that support vision
-- surface model capability limits more clearly in the UI
-
-### Medium priority
-
-- deeper session diagnostics and inspection
-- richer per-tool permission explanations in the chat UI
-- optional session timeline filters / debugging views
-
-### Lower priority
-
-- MCP server expansion
-- custom provider overrides
-- foreground-session coordination with TUI mode
-- built-in tool overrides
-
-## Copilot SDK implementation roadmap
-
-If we want to keep pushing the Copilot SDK integration further, the clean implementation path is:
-
-### Phase 1 — now implemented
-
-Goal: make active sessions safer and more controllable.
-
-Implement:
-
-- add request cancellation using `session.abort()`
-- replace the current `send()` + manual `waitForIdle()` pattern with `sendAndWait()` where it simplifies the lifecycle
-- stop using blanket permission approval for everything and introduce explicit permission policy by kind:
-  - `shell`
-  - `write`
-  - `mcp`
-  - `read`
-  - `url`
-  - `custom-tool`
-
-Main files:
-
-- `apps/api/src/routes/chat.ts`
-- `apps/api/src/services/copilot.ts`
-- `packages/shared/src/index.ts`
-
-Expected outcome:
-
-- users can stop long-running responses
-- fewer hung session edge cases
-- better control over risky tool execution
-
-Implemented:
-
-- request cancellation using `session.abort()`
-- `sendAndWait()`-based streaming lifecycle
-- daemon-level approval policy (`approve-all` vs `safer-defaults`)
-
-### Phase 2 — now implemented
-
-Goal: expose more of what the SDK already emits and stop duplicating chat history.
-
-Implement:
-
-- subscribe to `assistant.reasoning_delta` and `assistant.reasoning`
-- capture `assistant.usage`
-- load thread detail from `session.getMessages()`
-- support `ask_user`-style user input requests
-- surface tool execution activity in the chat UI
-
-Main files:
-
-- `apps/api/src/routes/chat.ts`
-- `apps/api/src/services/copilot.ts`
-- `apps/api/src/store/thread-store.ts`
-- `packages/shared/src/index.ts`
-- `apps/client/src/app.tsx`
-
-Expected outcome:
-
-- richer live response UX for reasoning models
-- token/cost/performance visibility
-- better debugging and session replay without duplicating full transcripts in SQLite
-
-### Phase 3 — interactive agent flows and multimodal polish
-
-Goal: support more advanced agent behavior.
-
-Implement:
-
-- register `onUserInputRequest` so SDK sessions can ask clarifying questions when needed
-- improve image/vision handling based on model capabilities
-- expose model capability limits more clearly in the UI
-
-Main files:
-
-- `apps/api/src/services/copilot.ts`
-- `apps/api/src/routes/chat.ts`
-- `packages/shared/src/index.ts`
-- `apps/client/src/app.tsx`
-
-Expected outcome:
-
-- more natural multi-step agent conversations
-- better use of multimodal models
-- clearer model behavior in the UI
-
-### Phase 4 — optional advanced integrations
-
-Goal: add power-user and infrastructure features only if they are still useful after the core product is simplified.
-
-Possible work:
-
-- MCP server wiring
-- custom provider / BYOK support
-- foreground session coordination with TUI mode
-- built-in tool overrides
-
-These are lower priority because they add integration surface area without improving the core single-user Mac daemon experience as much as the earlier phases.
-
-### Recommended implementation order
-
-1. `session.abort()`
-2. permission handling cleanup
-3. reasoning and usage streaming
-4. `sendAndWait()` lifecycle simplification
-5. `session.getMessages()` support
-6. `onUserInputRequest`
-7. image/vision polish
-8. optional MCP / provider / TUI work
-
-### Recommended scope cuts
-
-If we want to stay disciplined, the highest-value adoption set is:
-
-- abort
-- permissions
-- reasoning streaming
-- usage events
-- message replay via `getMessages()`
-
-That would give the product a much more complete Copilot SDK integration without dragging in lower-value platform complexity too early.
+- `/api/health`
+- `/api/auth/*`
+- `/api/projects`
+- `/api/threads`
+- `/api/chat/stream`
+- `/api/chat/abort`
+- `/api/attachments`
+- `/api/models`
+- `/api/copilot/status`
+- `/api/copilot/preferences`
 
 ## Getting started
 
-1. Install dependencies:
+1. Install dependencies for the web packages:
 
 ```bash
 pnpm install
@@ -404,7 +106,7 @@ pnpm install
 cp .env.example .env
 ```
 
-3. Configure the backend:
+3. Configure the daemon:
 
 ```bash
 # Single-user app auth
@@ -417,11 +119,8 @@ DAEMON_OWNER_LOGIN=daemon
 GITHUB_CLIENT_ID=...
 
 # Optional Copilot runtime overrides
-# By default the SDK can use the logged-in local Copilot/GitHub user on the Mac daemon.
 COPILOT_USE_LOGGED_IN_USER=true
-# Optional: point at an existing Copilot CLI server
 COPILOT_CLI_URL=
-# Optional: force a specific token instead of the logged-in local user
 COPILOT_GITHUB_TOKEN=
 
 # Optional remote/client access helpers
@@ -433,10 +132,10 @@ CLIENT_DEFAULT_API_URL=
 EXPO_PUBLIC_SERVICE_ACCESS_TOKEN=
 ```
 
-4. Start the API:
+4. Start the daemon:
 
 ```bash
-pnpm dev:api
+HOST=0.0.0.0 cargo run --manifest-path apps/daemon/Cargo.toml
 ```
 
 5. Start the web client:
@@ -449,7 +148,7 @@ This starts a small local static dev server that rebuilds the client when files 
 
 ## Notes and operational details
 
-- For Copilot SDK auth on a Mac daemon, the default path is the logged-in local Copilot/GitHub user (`COPILOT_USE_LOGGED_IN_USER=true`).
+- For Copilot auth on a Mac daemon, the default path is the logged-in local Copilot/GitHub user (`COPILOT_USE_LOGGED_IN_USER=true`).
 - `COPILOT_GITHUB_TOKEN` only overrides that behavior.
 - `APP_AUTH_MODE=local` is the recommended default for this single-user daemon.
 - The frontend negotiates auth with the backend and creates a local session automatically in local mode.
@@ -459,7 +158,7 @@ This starts a small local static dev server that rebuilds the client when files 
 - The client stores session tokens per daemon origin and auth config version, so switching daemon URLs or auth modes does not reuse stale sessions.
 - `TAILSCALE_API_URL` is the preferred static remote URL for this setup.
 - `REMOTE_ACCESS_MODE` controls how the daemon advertises itself in `/api/health` (`local`, `tailscale`, or `public`).
-- For direct Tailscale access, either run the API with `HOST=0.0.0.0` and use `http://your-mac.tailnet-name.ts.net:4000`, or keep the API bound locally and front it with `tailscale serve` for a stable HTTPS URL.
+- For direct Tailscale access, run the daemon with `HOST=0.0.0.0` and use `http://your-mac.tailnet-name.ts.net:4000`, or front it with `tailscale serve` for a stable HTTPS URL.
 
 ## GitHub Pages frontend
 
