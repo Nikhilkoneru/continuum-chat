@@ -434,6 +434,7 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
     let config_path = xml_escape(&runtime::path_to_string(&config.config_file_path));
     let log_path = xml_escape(&runtime::path_to_string(&config.log_file_path));
     let app_support = xml_escape(&runtime::path_to_string(&config.app_support_dir));
+    let service_path_env = xml_escape(&managed_service_path());
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -452,6 +453,8 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
     <dict>
       <key>CONTINUUM_CONFIG_FILE</key>
       <string>{config_path}</string>
+      <key>PATH</key>
+      <string>{service_path_env}</string>
     </dict>
     <key>WorkingDirectory</key>
     <string>{app_support}</string>
@@ -469,6 +472,7 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
         label = runtime::service_name(),
         exe = xml_escape(&service_path),
         config_path = config_path,
+        service_path_env = service_path_env,
         log_path = log_path,
         app_support = app_support,
     )
@@ -476,8 +480,9 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
 
 fn render_systemd_unit(config: &Config, exe_path: &Path) -> String {
     format!(
-        "[Unit]\nDescription=Continuum Chat daemon\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=CONTINUUM_CONFIG_FILE={}\nExecStart={} daemon run\nWorkingDirectory={}\nRestart=always\nRestartSec=3\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Continuum Chat daemon\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=CONTINUUM_CONFIG_FILE={}\nEnvironment=PATH={}\nExecStart={} daemon run\nWorkingDirectory={}\nRestart=always\nRestartSec=3\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=default.target\n",
         shell_escape(&runtime::path_to_string(&config.config_file_path)),
+        shell_escape(&managed_service_path()),
         shell_escape(&runtime::path_to_string(exe_path)),
         shell_escape(&runtime::path_to_string(&config.app_support_dir)),
         shell_escape(&runtime::path_to_string(&config.log_file_path)),
@@ -487,10 +492,64 @@ fn render_systemd_unit(config: &Config, exe_path: &Path) -> String {
 
 fn render_windows_runner(config: &Config, exe_path: &Path) -> String {
     format!(
-        "@echo off\r\nset CONTINUUM_CONFIG_FILE={}\r\n\"{}\" daemon run\r\n",
+        "@echo off\r\nset CONTINUUM_CONFIG_FILE={}\r\nset PATH={};%PATH%\r\n\"{}\" daemon run\r\n",
         runtime::path_to_string(&config.config_file_path),
+        runtime::path_to_string(&PathBuf::from(managed_service_path())),
         runtime::path_to_string(exe_path),
     )
+}
+
+fn managed_service_path() -> String {
+    let mut entries = Vec::<PathBuf>::new();
+
+    if cfg!(target_os = "windows") {
+        entries.push(PathBuf::from(r"C:\Windows\System32"));
+        entries.push(PathBuf::from(r"C:\Windows"));
+        entries.push(PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0"));
+    } else {
+        entries.push(user_home().join(".local").join("bin"));
+        entries.push(PathBuf::from("/usr/bin"));
+        entries.push(PathBuf::from("/bin"));
+        entries.push(PathBuf::from("/usr/sbin"));
+        entries.push(PathBuf::from("/sbin"));
+        entries.push(PathBuf::from("/opt/homebrew/bin"));
+        entries.push(PathBuf::from("/usr/local/bin"));
+    }
+
+    for tool in ["gh", "tailscale", "node"] {
+        for candidate in search_path(tool) {
+            if candidate.exists() {
+                let resolved = fs::canonicalize(&candidate).unwrap_or(candidate);
+                if let Some(parent) = resolved.parent() {
+                    entries.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+
+    let mut unique = Vec::<PathBuf>::new();
+    for entry in entries {
+        if !unique.iter().any(|existing| existing == &entry) {
+            unique.push(entry);
+        }
+    }
+
+    env::join_paths(unique)
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| {
+            if cfg!(target_os = "windows") {
+                String::from(r"C:\Windows\System32;C:\Windows")
+            } else {
+                String::from("/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin")
+            }
+        })
+}
+
+fn user_home() -> PathBuf {
+    env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn launchd_domain() -> anyhow::Result<String> {
