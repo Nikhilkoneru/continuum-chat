@@ -2,6 +2,11 @@ use std::path::PathBuf;
 
 use crate::remote_access;
 
+const APP_SUPPORT_DIR_NAME: &str = "continuum-chat";
+const LEGACY_APP_SUPPORT_DIR_NAME: &str = "github-personal-assistant";
+const CONFIG_FILE_ENV: &str = "CONTINUUM_CONFIG_FILE";
+const LEGACY_CONFIG_FILE_ENV: &str = "GCPA_CONFIG_FILE";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub host: String,
@@ -31,12 +36,10 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        let initial_app_support_dir = std::env::var("APP_SUPPORT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs_fallback().join("github-personal-assistant"));
-        let initial_config_path = std::env::var("GCPA_CONFIG_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| default_config_path(&initial_app_support_dir));
+        let initial_app_support_dir = env_path("APP_SUPPORT_DIR").unwrap_or_else(default_app_support_dir);
+        let initial_config_path = env_path(CONFIG_FILE_ENV)
+            .or_else(|| env_path(LEGACY_CONFIG_FILE_ENV))
+            .unwrap_or_else(|| default_config_path(&initial_app_support_dir));
 
         if initial_config_path.exists() {
             let _ = dotenvy::from_path(&initial_config_path);
@@ -44,12 +47,10 @@ impl Config {
             load_workspace_env();
         }
 
-        let app_support_dir = std::env::var("APP_SUPPORT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or(initial_app_support_dir);
-        let config_file_path = std::env::var("GCPA_CONFIG_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| default_config_path(&app_support_dir));
+        let app_support_dir = env_path("APP_SUPPORT_DIR").unwrap_or(initial_app_support_dir);
+        let config_file_path = env_path(CONFIG_FILE_ENV)
+            .or_else(|| env_path(LEGACY_CONFIG_FILE_ENV))
+            .unwrap_or_else(|| default_config_path(&app_support_dir));
 
         let host = env_or("HOST", "0.0.0.0");
         let port = env_or("PORT", "4000").parse().unwrap_or(4000);
@@ -164,7 +165,7 @@ impl Config {
 
     pub fn to_env_file_contents(&self) -> String {
         let mut lines = vec![
-            "# gcpa daemon configuration".to_string(),
+            "# continuum daemon configuration".to_string(),
             assignment("HOST", Some(&self.host)),
             assignment("PORT", Some(&self.port.to_string())),
             assignment("CLIENT_ORIGIN", Some(&self.client_origin)),
@@ -225,6 +226,10 @@ fn env_opt(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+fn env_path(key: &str) -> Option<PathBuf> {
+    env_opt(key).map(PathBuf::from)
+}
+
 fn load_workspace_env() {
     let mut dir = std::env::current_dir().unwrap_or_default();
     loop {
@@ -241,6 +246,21 @@ fn load_workspace_env() {
 
 fn default_config_path(app_support_dir: &std::path::Path) -> PathBuf {
     app_support_dir.join("config").join("daemon.env")
+}
+
+fn default_app_support_dir() -> PathBuf {
+    let base = dirs_fallback();
+    let preferred = base.join(APP_SUPPORT_DIR_NAME);
+    if preferred.exists() {
+        return preferred;
+    }
+
+    let legacy = base.join(LEGACY_APP_SUPPORT_DIR_NAME);
+    if legacy.exists() {
+        return legacy;
+    }
+
+    preferred
 }
 
 fn assignment(key: &str, value: Option<&str>) -> String {

@@ -1,14 +1,14 @@
 {
   "id": "./",
-  "name": "Github Personal Assistant",
-  "short_name": "Assistant",
+  "name": "Continuum Chat",
+  "short_name": "Continuum",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui", "browser"],
   "background_color": "#0b1020",
   "theme_color": "#0b1020",
-  "description": "Connect a hosted React frontend to your own GitHub assistant daemon.",
+  "description": "Open-source local chat UI for an ACP-backed coding daemon.",
   "categories": ["productivity", "developer", "utilities"],
   "icons": [
     {
@@ -32,9 +32,9 @@
   ],
   "shortcuts": [
     {
-      "name": "Open assistant",
-      "short_name": "Assistant",
-      "description": "Reconnect to your personal assistant daemon.",
+      "name": "Open Continuum Chat",
+      "short_name": "Continuum",
+      "description": "Reconnect to your local coding chat daemon.",
       "url": "./"
     }
   ]

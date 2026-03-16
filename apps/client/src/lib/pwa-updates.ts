@@ -1,7 +1,7 @@
 let isReloadingForUpdate = false;
 
-type GpaWindow = Window & {
-  __GPA_BUILD_VERSION__?: string;
+type ContinuumWindow = Window & {
+  __CONTINUUM_BUILD_VERSION__?: string;
 };
 
 const reloadForFreshShell = () => {
@@ -18,7 +18,7 @@ export const registerPwaServiceWorker = () => {
     return;
   }
 
-  const buildVersion = (window as GpaWindow).__GPA_BUILD_VERSION__?.trim() || 'dev';
+  const buildVersion = (window as ContinuumWindow).__CONTINUUM_BUILD_VERSION__?.trim() || 'dev';
   const registrationUrl = `./service-worker.js?v=${encodeURIComponent(buildVersion)}`;
 
   navigator.serviceWorker.addEventListener('controllerchange', reloadForFreshShell);

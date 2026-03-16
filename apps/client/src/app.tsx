@@ -332,7 +332,7 @@ export default function App() {
       ? 'Your daemon'
       : authCapabilities?.mode === 'github-device' || authCapabilities?.mode === 'github-oauth'
         ? 'Secure access'
-        : 'Github Personal Assistant';
+        : 'Continuum Chat';
   const authHeading =
     authCapabilities?.mode === 'local'
       ? 'Continue to your chats.'

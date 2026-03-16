@@ -1,9 +1,10 @@
-const API_URL_KEY = 'github-personal-assistant.api-url';
-export const API_URL_CHANGE_EVENT = 'github-personal-assistant:api-url-change';
+const API_URL_KEY = 'continuum-chat.api-url';
+const LEGACY_API_URL_KEY = 'github-personal-assistant.api-url';
+export const API_URL_CHANGE_EVENT = 'continuum-chat:api-url-change';
 
 declare global {
   interface Window {
-    __GPA_DEFAULT_API_URL__?: string;
+    __CONTINUUM_DEFAULT_API_URL__?: string;
   }
 }
 
@@ -17,7 +18,7 @@ const notifyApiUrlChanged = () => {
 
 export const getDefaultApiUrl = () => {
   if (typeof window !== 'undefined') {
-    const configuredDefault = window.__GPA_DEFAULT_API_URL__?.trim();
+    const configuredDefault = window.__CONTINUUM_DEFAULT_API_URL__?.trim();
     if (configuredDefault) {
       return configuredDefault.replace(/\/+$/, '');
     }
@@ -43,16 +44,36 @@ export const getDefaultApiUrl = () => {
   return 'http://127.0.0.1:4000';
 };
 
-export const getApiUrlOverride = async () => (canUseStorage() ? window.localStorage.getItem(API_URL_KEY) : null);
+export const getApiUrlOverride = async () => {
+  if (!canUseStorage()) {
+    return null;
+  }
+
+  const current = window.localStorage.getItem(API_URL_KEY);
+  if (current) {
+    return current;
+  }
+
+  const legacy = window.localStorage.getItem(LEGACY_API_URL_KEY);
+  if (legacy) {
+    window.localStorage.setItem(API_URL_KEY, legacy);
+    window.localStorage.removeItem(LEGACY_API_URL_KEY);
+    return legacy;
+  }
+
+  return null;
+};
 export const setApiUrlOverride = async (value: string) => {
   if (canUseStorage()) {
     window.localStorage.setItem(API_URL_KEY, value);
+    window.localStorage.removeItem(LEGACY_API_URL_KEY);
     notifyApiUrlChanged();
   }
 };
 export const clearApiUrlOverride = async () => {
   if (canUseStorage()) {
     window.localStorage.removeItem(API_URL_KEY);
+    window.localStorage.removeItem(LEGACY_API_URL_KEY);
     notifyApiUrlChanged();
   }
 };

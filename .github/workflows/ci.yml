@@ -1,4 +1,4 @@
-name: Validate gcpa
+name: Validate continuum
 
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
         run: node apps/client/scripts/build.mjs
 
       - name: Build daemon
-        run: cargo build --manifest-path apps/daemon/Cargo.toml --bin gcpa
+        run: cargo build --manifest-path apps/daemon/Cargo.toml --bin continuum
 
       - name: Test daemon
         run: cargo test --manifest-path apps/daemon/Cargo.toml

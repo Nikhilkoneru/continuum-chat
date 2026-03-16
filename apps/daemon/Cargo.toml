@@ -1,12 +1,13 @@
 [package]
-name = "gpa-daemon"
+name = "continuum-daemon"
 version = "0.2.4"
 edition = "2021"
-default-run = "gcpa"
+license = "Apache-2.0"
+default-run = "continuum"
 build = "build.rs"
 
 [[bin]]
-name = "gcpa"
+name = "continuum"
 path = "src/main.rs"
 
 

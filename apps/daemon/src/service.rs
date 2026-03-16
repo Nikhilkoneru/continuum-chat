@@ -10,7 +10,7 @@ use crate::runtime;
 pub fn install(config: &Config, start_now: bool) -> anyhow::Result<()> {
     ensure_config_snapshot(config)?;
     let exe_path =
-        std::env::current_exe().context("Could not determine the gcpa executable path")?;
+        std::env::current_exe().context("Could not determine the continuum executable path")?;
     let definition_path = runtime::service_definition_path(config);
 
     if let Some(parent) = definition_path.parent() {
@@ -283,7 +283,7 @@ pub fn status(config: &Config) -> anyhow::Result<()> {
 
 pub fn print_definition(config: &Config) -> anyhow::Result<()> {
     let exe_path =
-        std::env::current_exe().context("Could not determine the gcpa executable path")?;
+        std::env::current_exe().context("Could not determine the continuum executable path")?;
     let definition = if cfg!(target_os = "macos") {
         render_launchd_plist(config, &exe_path)
     } else if cfg!(target_os = "windows") {
@@ -347,7 +347,7 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>GCPA_CONFIG_FILE</key>
+      <key>CONTINUUM_CONFIG_FILE</key>
       <string>{config_path}</string>
     </dict>
     <key>WorkingDirectory</key>
@@ -373,7 +373,7 @@ fn render_launchd_plist(config: &Config, exe_path: &Path) -> String {
 
 fn render_systemd_unit(config: &Config, exe_path: &Path) -> String {
     format!(
-        "[Unit]\nDescription=GitHub Personal Assistant daemon\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=GCPA_CONFIG_FILE={}\nExecStart={} daemon run\nWorkingDirectory={}\nRestart=always\nRestartSec=3\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Continuum Chat daemon\nAfter=network.target\n\n[Service]\nType=simple\nEnvironment=CONTINUUM_CONFIG_FILE={}\nExecStart={} daemon run\nWorkingDirectory={}\nRestart=always\nRestartSec=3\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=default.target\n",
         shell_escape(&runtime::path_to_string(&config.config_file_path)),
         shell_escape(&runtime::path_to_string(exe_path)),
         shell_escape(&runtime::path_to_string(&config.app_support_dir)),
@@ -384,7 +384,7 @@ fn render_systemd_unit(config: &Config, exe_path: &Path) -> String {
 
 fn render_windows_runner(config: &Config, exe_path: &Path) -> String {
     format!(
-        "@echo off\r\nset GCPA_CONFIG_FILE={}\r\n\"{}\" daemon run\r\n",
+        "@echo off\r\nset CONTINUUM_CONFIG_FILE={}\r\n\"{}\" daemon run\r\n",
         runtime::path_to_string(&config.config_file_path),
         runtime::path_to_string(exe_path),
     )

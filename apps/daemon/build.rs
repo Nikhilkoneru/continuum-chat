@@ -11,10 +11,10 @@ fn main() {
     println!("cargo:rerun-if-changed=../../pnpm-lock.yaml");
 
     if let Ok(target) = env::var("TARGET") {
-        println!("cargo:rustc-env=GCPA_BUILD_TARGET={target}");
+        println!("cargo:rustc-env=CONTINUUM_BUILD_TARGET={target}");
     }
 
-    if env::var_os("GCPA_SKIP_CLIENT_BUILD").is_some() {
+    if env::var_os("CONTINUUM_SKIP_CLIENT_BUILD").is_some() {
         return;
     }
 

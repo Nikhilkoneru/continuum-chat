@@ -380,7 +380,7 @@ async fn fetch_github_profile(
         .header("Accept", "application/vnd.github+json")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "gpa-daemon/1.0")
+        .header("User-Agent", "continuum-daemon/1.0")
         .send()
         .await
         .map_err(|e| AppError::BadGateway(e.to_string()))?;

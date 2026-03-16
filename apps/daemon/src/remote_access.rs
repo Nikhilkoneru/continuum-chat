@@ -195,9 +195,9 @@ pub fn disable_tailscale_https(port: u16) -> anyhow::Result<bool> {
     if !has_any_serve_config(&serve_status) {
         return Ok(false);
     }
-    if !serve_config_is_gcpa_only(&serve_status, port) {
+    if !serve_config_is_continuum_only(&serve_status, port) {
         anyhow::bail!(
-            "Refusing to reset Tailscale Serve because this node has non-gcpa serve rules. Inspect them with `tailscale serve status --json` and remove them manually if you want gcpa to stop managing HTTPS here."
+            "Refusing to reset Tailscale Serve because this node has non-continuum serve rules. Inspect them with `tailscale serve status --json` and remove them manually if you want continuum to stop managing HTTPS here."
         );
     }
 
@@ -246,7 +246,7 @@ fn extract_serve_url_for_port(status: &TailscaleServeStatus, port: u16) -> Optio
         })
 }
 
-fn serve_config_is_gcpa_only(status: &TailscaleServeStatus, port: u16) -> bool {
+fn serve_config_is_continuum_only(status: &TailscaleServeStatus, port: u16) -> bool {
     let entries = all_serve_entries(status);
     !entries.is_empty()
         && entries.into_iter().all(|(_, web)| {
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn gcpa_only_check_rejects_other_targets() {
+    fn continuum_only_check_rejects_other_targets() {
         let status: TailscaleServeStatus = serde_json::from_str(
             r#"{
               "Foreground": {
@@ -359,7 +359,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!serve_config_is_gcpa_only(&status, 4000));
+        assert!(!serve_config_is_continuum_only(&status, 4000));
     }
 
     #[test]

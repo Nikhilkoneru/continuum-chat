@@ -1,4 +1,4 @@
-name: Release gcpa CLI
+name: Release continuum CLI
 
 on:
   push:
@@ -26,19 +26,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-            binary: gcpa
+            binary: continuum
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
-            binary: gcpa
+            binary: continuum
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
-            binary: gcpa
+            binary: continuum
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-            binary: gcpa.exe
+            binary: continuum.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -66,7 +66,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build release binary
-        run: cargo build --release --manifest-path apps/daemon/Cargo.toml --bin gcpa --target ${{ matrix.target }}
+        run: cargo build --release --manifest-path apps/daemon/Cargo.toml --bin continuum --target ${{ matrix.target }}
 
       - name: Package unix archive
         if: runner.os != 'Windows'
@@ -74,7 +74,7 @@ jobs:
         run: |
           mkdir -p dist/${{ matrix.target }}
           cp apps/daemon/target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
-          tar -C dist/${{ matrix.target }} -czf dist/gcpa-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
+          tar -C dist/${{ matrix.target }} -czf dist/continuum-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
 
       - name: Package windows archive
         if: runner.os == 'Windows'
@@ -82,13 +82,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist/${{ matrix.target }} | Out-Null
           Copy-Item apps/daemon/target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.target }}/${{ matrix.binary }}
-          Compress-Archive -Path dist/${{ matrix.target }}/${{ matrix.binary }} -DestinationPath dist/gcpa-${{ matrix.target }}.zip -Force
+          Compress-Archive -Path dist/${{ matrix.target }}/${{ matrix.binary }} -DestinationPath dist/continuum-${{ matrix.target }}.zip -Force
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gcpa-${{ matrix.target }}
-          path: dist/gcpa-${{ matrix.target }}.*
+          name: continuum-${{ matrix.target }}
+          path: dist/continuum-${{ matrix.target }}.*
 
   release:
     runs-on: ubuntu-latest
@@ -123,7 +123,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.value }}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --notes "Cross-platform gcpa CLI release." --target "${GITHUB_SHA}"
+            gh release create "$TAG" --title "$TAG" --notes "Cross-platform continuum CLI release." --target "${GITHUB_SHA}"
           fi
           while IFS= read -r -d '' file; do
             gh release upload "$TAG" "$file" --clobber

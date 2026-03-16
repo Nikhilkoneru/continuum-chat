@@ -25,7 +25,7 @@ use db::Database;
 use state::AppState;
 
 #[derive(Parser, Debug)]
-#[command(name = "gcpa", about = "GitHub Copilot Personal Assistant")]
+#[command(name = "continuum", about = "Continuum Chat")]
 struct Cli {
     #[command(subcommand)]
     command: Option<CommandGroup>,
@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("gcpa {}", report.runtime.version);
+                println!("continuum {}", report.runtime.version);
                 for check in report.checks {
                     println!(
                         "[{}] {} - {}",
@@ -212,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 TailscaleCommand::Disable => {
                     if remote_access::disable_tailscale_https(config.port)? {
-                        println!("Removed gcpa-managed Tailscale Serve HTTPS config.");
+                        println!("Removed continuum-managed Tailscale Serve HTTPS config.");
                     } else {
                         println!("No Tailscale Serve config was active for this node.");
                     }
@@ -325,7 +325,7 @@ async fn serve(config: Config, started_at: String) -> anyhow::Result<()> {
         .with_state(state.clone());
 
     let addr = SocketAddr::new(config.host.parse()?, config.port);
-    tracing::info!("gcpa daemon listening on http://{addr}");
+    tracing::info!("continuum daemon listening on http://{addr}");
     tracing::info!("Web UI available at {}", config.preferred_ui_origin());
     if let Some(ref url) = config.tailscale_api_url {
         tracing::info!("Tailscale URL: {url}");

@@ -10,8 +10,8 @@ use crate::config::Config;
 use crate::{runtime, service};
 
 const RELEASE_OWNER: &str = "Nikhilkoneru";
-const RELEASE_REPO: &str = "github-personal-assistant";
-const BINARY_NAME: &str = "gcpa";
+const RELEASE_REPO: &str = "continuum-chat";
+const BINARY_NAME: &str = "continuum";
 
 #[derive(Debug, Clone)]
 pub struct UpdateOptions {
@@ -36,19 +36,19 @@ struct GitHubReleaseAsset {
 
 pub async fn run(config: &Config, options: UpdateOptions) -> anyhow::Result<()> {
     let current_version =
-        Version::parse(runtime::app_version()).context("Current gcpa version is invalid")?;
+        Version::parse(runtime::app_version()).context("Current continuum version is invalid")?;
     let release = match fetch_release(options.version.as_deref()).await? {
         Some(release) => release,
         None if options.check => {
             println!(
-                "No published gcpa releases were found yet for {}/{}.",
+                "No published continuum releases were found yet for {}/{}.",
                 RELEASE_OWNER, RELEASE_REPO
             );
             return Ok(());
         }
         None => {
             anyhow::bail!(
-                "No published gcpa releases were found yet for {}/{}.",
+                "No published continuum releases were found yet for {}/{}.",
                 RELEASE_OWNER,
                 RELEASE_REPO
             );
@@ -58,7 +58,7 @@ pub async fn run(config: &Config, options: UpdateOptions) -> anyhow::Result<()> 
 
     if options.check {
         if !options.force && target_version <= current_version {
-            println!("gcpa {} is up to date.", current_version);
+            println!("continuum {} is up to date.", current_version);
         } else {
             println!(
                 "Update available for {} (target {}, current {}).",
@@ -76,7 +76,7 @@ pub async fn run(config: &Config, options: UpdateOptions) -> anyhow::Result<()> 
     }
 
     if !options.force && target_version <= current_version {
-        println!("gcpa {} is already up to date.", current_version);
+        println!("continuum {} is already up to date.", current_version);
         return Ok(());
     }
 
@@ -106,10 +106,10 @@ pub async fn run(config: &Config, options: UpdateOptions) -> anyhow::Result<()> 
     let extracted_binary = extract_binary(&archive_path, temp_dir.path())?;
 
     self_replace::self_replace(&extracted_binary)
-        .context("Failed to replace the gcpa executable with the downloaded release")?;
+        .context("Failed to replace the continuum executable with the downloaded release")?;
 
     println!(
-        "Updated gcpa from {} to {} for target {}.",
+        "Updated continuum from {} to {} for target {}.",
         current_version,
         release.tag_name,
         runtime::build_target()
@@ -288,9 +288,9 @@ fn release_asset_name(target: &str) -> String {
 
 fn binary_name_for_target(target: &str) -> &'static str {
     if target.contains("windows") {
-        "gcpa.exe"
+        "continuum.exe"
     } else {
-        "gcpa"
+        "continuum"
     }
 }
 

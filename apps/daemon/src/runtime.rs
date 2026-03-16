@@ -6,9 +6,9 @@ use serde::Serialize;
 
 use crate::config::Config;
 
-const CLI_NAME: &str = "gcpa";
-const SERVICE_NAME_UNIX: &str = "dev.github-personal-assistant.gcpa";
-const SERVICE_NAME_WINDOWS: &str = "GCPA-Daemon";
+const CLI_NAME: &str = "continuum";
+const SERVICE_NAME_UNIX: &str = "dev.continuum-chat.continuum";
+const SERVICE_NAME_WINDOWS: &str = "Continuum-Daemon";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,7 +74,7 @@ pub fn app_version() -> &'static str {
 }
 
 pub fn build_target() -> &'static str {
-    env!("GCPA_BUILD_TARGET")
+    env!("CONTINUUM_BUILD_TARGET")
 }
 
 pub fn service_name() -> &'static str {
@@ -116,7 +116,7 @@ pub fn windows_service_runner_path(config: &Config) -> PathBuf {
     config
         .app_support_dir
         .join("scripts")
-        .join("gcpa-daemon.cmd")
+        .join("continuum-daemon.cmd")
 }
 
 pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInfo {
@@ -133,7 +133,7 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
             ui_access_url
         ),
         "tailscale" => format!(
-            "Open {} in a browser on a device with Tailscale installed and signed into the same tailnet. This is direct Tailscale HTTP to the daemon port; run `gcpa remote-access tailscale enable` to switch to HTTPS via Tailscale Serve.",
+            "Open {} in a browser on a device with Tailscale installed and signed into the same tailnet. This is direct Tailscale HTTP to the daemon port; run `continuum remote-access tailscale enable` to switch to HTTPS via Tailscale Serve.",
             ui_access_url
         ),
         _ => format!(
@@ -166,7 +166,7 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
         service_name: service_name().to_string(),
         service_definition_path: path_to_string(&service_definition_path),
         service_installed,
-        control_surface: "bundled web ui + gcpa cli".to_string(),
+        control_surface: "bundled web ui + continuum cli".to_string(),
         install_hint: format!("{} daemon service install", cli_name()),
         restart_hint: format!("{} daemon service restart", cli_name()),
         status_hint: format!("{} daemon service status", cli_name()),
@@ -225,7 +225,7 @@ pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
                             )
                         } else {
                             format!(
-                                "{url} (plain Tailscale HTTP direct to the daemon port; run `gcpa remote-access tailscale enable` for HTTPS)"
+                                "{url} (plain Tailscale HTTP direct to the daemon port; run `continuum remote-access tailscale enable` for HTTPS)"
                             )
                         }
                     })

@@ -319,7 +319,7 @@ impl AcpConnection {
         let params = InitializeParams {
             protocol_version: 1,
             client_info: ClientInfo {
-                name: "gpa-daemon".to_string(),
+                name: "continuum-daemon".to_string(),
                 version: crate::runtime::app_version().to_string(),
             },
             capabilities: ClientCapabilities {
