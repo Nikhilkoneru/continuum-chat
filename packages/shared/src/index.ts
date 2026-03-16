@@ -212,16 +212,35 @@ export type ChatUsage = {
 export type ChatToolActivity = {
   id: string;
   toolName: string;
+  kind?: string;
   status: 'running' | 'completed' | 'failed';
   startedAt: string;
   updatedAt: string;
   arguments?: string;
   result?: string;
   additionalContext?: string;
+  locations?: string[];
   permissionDecision?: 'allow' | 'deny' | 'ask';
   permissionDecisionReason?: string;
   suppressed?: boolean;
   error?: string;
+};
+
+export type ChatPermissionOption = {
+  optionId: string;
+  label: string;
+  kind?: string;
+};
+
+export type ChatPermissionRequest = {
+  requestId: string;
+  sessionId: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolKind?: string;
+  question: string;
+  options: ChatPermissionOption[];
+  createdAt: string;
 };
 
 export type ChatMessageMetadata = {
@@ -231,6 +250,7 @@ export type ChatMessageMetadata = {
   usage?: ChatUsage;
   toolActivities?: ChatToolActivity[];
   phase?: string;
+  planItems?: string[];
 };
 
 export type ChatUserInputRequest = {
@@ -266,6 +286,7 @@ export type ThreadSummary = {
 export type ThreadDetail = ThreadSummary & {
   messages: ChatMessage[];
   pendingUserInputRequest?: ChatUserInputRequest;
+  pendingPermissionRequests?: ChatPermissionRequest[];
 };
 
 export type CreateThreadInput = {
@@ -294,10 +315,14 @@ export type ChatStreamEvent =
   | { type: 'chunk'; delta: string }
   | { type: 'reasoning_delta'; delta: string }
   | { type: 'reasoning'; content: string }
+  | { type: 'status'; phase: string }
+  | { type: 'plan'; items: string[] }
   | { type: 'usage'; usage: ChatUsage }
   | { type: 'tool_event'; activity: ChatToolActivity }
   | { type: 'user_input_request'; request: ChatUserInputRequest }
   | { type: 'user_input_cleared'; requestId: string }
+  | { type: 'permission_request'; request: ChatPermissionRequest }
+  | { type: 'permission_cleared'; requestId: string }
   | { type: 'aborted'; message: string }
   | { type: 'done' }
   | { type: 'error'; message: string };

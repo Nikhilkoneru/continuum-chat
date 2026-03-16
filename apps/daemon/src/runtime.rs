@@ -107,7 +107,10 @@ pub fn service_definition_path(config: &Config) -> PathBuf {
 }
 
 pub fn windows_service_runner_path(config: &Config) -> PathBuf {
-    config.app_support_dir.join("scripts").join("gcpa-daemon.cmd")
+    config
+        .app_support_dir
+        .join("scripts")
+        .join("gcpa-daemon.cmd")
 }
 
 pub fn detect_project_root(start: &Path) -> Option<PathBuf> {
@@ -118,7 +121,9 @@ pub fn detect_project_root(start: &Path) -> Option<PathBuf> {
     };
 
     loop {
-        if current.join("apps/client/scripts/build.mjs").exists() && current.join("apps/daemon/Cargo.toml").exists() {
+        if current.join("apps/client/scripts/build.mjs").exists()
+            && current.join("apps/daemon/Cargo.toml").exists()
+        {
             return Some(current);
         }
 
@@ -135,7 +140,10 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
     let copilot = resolve_copilot_tool(config, true);
     let service_definition_path = service_definition_path(config);
     let logs_hint = if cfg!(target_os = "windows") {
-        format!("Get-Content -Path '{}' -Wait", path_to_string(&config.log_file_path))
+        format!(
+            "Get-Content -Path '{}' -Wait",
+            path_to_string(&config.log_file_path)
+        )
     } else {
         format!("tail -f '{}'", path_to_string(&config.log_file_path))
     };
@@ -176,7 +184,8 @@ pub fn build_runtime_info(config: &Config, started_at: &str) -> DaemonRuntimeInf
 
 pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
     let runtime = build_runtime_info(config, started_at);
-    let project_root = detect_project_root(&env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let project_root =
+        detect_project_root(&env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let git = resolve_named_tool("git", true);
     let gh = resolve_named_tool("gh", true);
     let node = resolve_named_tool("node", true);
@@ -188,39 +197,48 @@ pub fn build_doctor_report(config: &Config, started_at: &str) -> DoctorReport {
             detail: if runtime.config_file_exists {
                 format!("Using {}", runtime.config_path)
             } else {
-                format!("No config file at {}. Service install will create one from current settings.", runtime.config_path)
+                format!(
+                    "No config file at {}. Service install will create one from current settings.",
+                    runtime.config_path
+                )
             },
         },
         DoctorCheck {
             name: "copilot-cli".to_string(),
             ok: runtime.copilot.found,
-            detail: runtime
-                .copilot
-                .path
-                .clone()
-                .unwrap_or_else(|| "GitHub Copilot CLI not found. Install it or set COPILOT_BIN.".to_string()),
+            detail: runtime.copilot.path.clone().unwrap_or_else(|| {
+                "GitHub Copilot CLI not found. Install it or set COPILOT_BIN.".to_string()
+            }),
         },
         DoctorCheck {
             name: "git".to_string(),
             ok: git.found,
-            detail: git.path.unwrap_or_else(|| "git not found in PATH".to_string()),
+            detail: git
+                .path
+                .unwrap_or_else(|| "git not found in PATH".to_string()),
         },
         DoctorCheck {
             name: "gh".to_string(),
             ok: gh.found,
-            detail: gh.path.unwrap_or_else(|| "gh not found in PATH".to_string()),
+            detail: gh
+                .path
+                .unwrap_or_else(|| "gh not found in PATH".to_string()),
         },
         DoctorCheck {
             name: "node".to_string(),
             ok: node.found,
-            detail: node.path.unwrap_or_else(|| "node not found in PATH".to_string()),
+            detail: node
+                .path
+                .unwrap_or_else(|| "node not found in PATH".to_string()),
         },
         DoctorCheck {
             name: "frontend-source".to_string(),
             ok: project_root.is_some(),
             detail: project_root
                 .map(|root| format!("Found UI source at {}", root.display()))
-                .unwrap_or_else(|| "Run `gcpa ui deploy` from the repo or a child directory of it.".to_string()),
+                .unwrap_or_else(|| {
+                    "Run `gcpa ui deploy` from the repo or a child directory of it.".to_string()
+                }),
         },
     ];
 
@@ -252,7 +270,12 @@ fn resolve_copilot_tool(config: &Config, include_version: bool) -> ToolStatus {
         extra_candidates.push(PathBuf::from("/snap/bin/copilot"));
     }
 
-    resolve_tool(config.copilot_bin.as_deref(), "copilot", &extra_candidates, include_version)
+    resolve_tool(
+        config.copilot_bin.as_deref(),
+        "copilot",
+        &extra_candidates,
+        include_version,
+    )
 }
 
 fn resolve_tool(
@@ -273,7 +296,11 @@ fn resolve_tool(
             return ToolStatus {
                 found: true,
                 path: Some(path_to_string(&candidate)),
-                version: if include_version { command_version(&candidate) } else { None },
+                version: if include_version {
+                    command_version(&candidate)
+                } else {
+                    None
+                },
             };
         }
     }

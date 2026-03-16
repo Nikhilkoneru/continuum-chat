@@ -44,7 +44,10 @@ async fn create(
     }
     let desc = body.description.as_deref().unwrap_or("").trim();
     let project = project_store::create_project(&state.db, &session.user_id, name, desc);
-    Ok((axum::http::StatusCode::CREATED, Json(json!({ "project": project }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(json!({ "project": project })),
+    ))
 }
 
 async fn get_one(

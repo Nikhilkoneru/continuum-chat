@@ -39,7 +39,9 @@ pub fn deploy_ui(config: &Config, options: &UiDeployOptions) -> anyhow::Result<(
         .or_else(|| config.public_api_url.clone())
         .filter(|value| {
             let normalized = value.trim();
-            !normalized.is_empty() && !normalized.contains("localhost") && !normalized.contains("127.0.0.1")
+            !normalized.is_empty()
+                && !normalized.contains("localhost")
+                && !normalized.contains("127.0.0.1")
         });
 
     build_client(&project_root, deploy_api_url.as_deref())?;
@@ -62,7 +64,12 @@ pub fn deploy_ui(config: &Config, options: &UiDeployOptions) -> anyhow::Result<(
         run_command(
             None,
             "gh",
-            &["repo", "clone", &options.repo, repo_dir.to_str().unwrap_or("repo")],
+            &[
+                "repo",
+                "clone",
+                &options.repo,
+                repo_dir.to_str().unwrap_or("repo"),
+            ],
         )?;
         ensure_branch(&repo_dir, &options.branch)?;
 
@@ -71,9 +78,21 @@ pub fn deploy_ui(config: &Config, options: &UiDeployOptions) -> anyhow::Result<(
         fs::write(target_dir.join(".nojekyll"), "")?;
 
         if has_repo_changes(&repo_dir)? {
-            run_command(Some(&repo_dir), "git", &["add", normalized_target_dir.as_str()])?;
-            run_command(Some(&repo_dir), "git", &["commit", "-m", "Deploy gcpa web UI"])?;
-            run_command(Some(&repo_dir), "git", &["push", "-u", "origin", &options.branch])?;
+            run_command(
+                Some(&repo_dir),
+                "git",
+                &["add", normalized_target_dir.as_str()],
+            )?;
+            run_command(
+                Some(&repo_dir),
+                "git",
+                &["commit", "-m", "Deploy gcpa web UI"],
+            )?;
+            run_command(
+                Some(&repo_dir),
+                "git",
+                &["push", "-u", "origin", &options.branch],
+            )?;
         }
 
         if !options.skip_pages_config {
@@ -97,7 +116,10 @@ fn ensure_tool(name: &str) -> anyhow::Result<()> {
     if tool.found {
         Ok(())
     } else {
-        anyhow::bail!("{} is required for `gcpa ui deploy` but was not found in PATH.", name)
+        anyhow::bail!(
+            "{} is required for `gcpa ui deploy` but was not found in PATH.",
+            name
+        )
     }
 }
 
@@ -144,8 +166,16 @@ fn repo_exists(repo: &str) -> anyhow::Result<bool> {
 }
 
 fn create_repo(repo: &str, private_repo: bool) -> anyhow::Result<()> {
-    let visibility = if private_repo { "--private" } else { "--public" };
-    run_command(None, "gh", &["repo", "create", repo, visibility, "--confirm"])?;
+    let visibility = if private_repo {
+        "--private"
+    } else {
+        "--public"
+    };
+    run_command(
+        None,
+        "gh",
+        &["repo", "create", repo, visibility, "--confirm"],
+    )?;
     Ok(())
 }
 

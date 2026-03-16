@@ -13,7 +13,11 @@ pub fn router() -> Router<AppState> {
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let config = &state.config;
     let runtime = runtime::build_runtime_info(config, &state.started_at);
-    let status = if runtime.copilot.found { "ok" } else { "degraded" };
+    let status = if runtime.copilot.found {
+        "ok"
+    } else {
+        "degraded"
+    };
     Json(json!({
         "status": status,
         "copilotConfigured": config.is_copilot_configured(),

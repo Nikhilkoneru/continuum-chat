@@ -9,7 +9,8 @@ use crate::runtime;
 
 pub fn install(config: &Config, start_now: bool) -> anyhow::Result<()> {
     ensure_config_snapshot(config)?;
-    let exe_path = std::env::current_exe().context("Could not determine the gcpa executable path")?;
+    let exe_path =
+        std::env::current_exe().context("Could not determine the gcpa executable path")?;
     let definition_path = runtime::service_definition_path(config);
 
     if let Some(parent) = definition_path.parent() {
@@ -19,11 +20,35 @@ pub fn install(config: &Config, start_now: bool) -> anyhow::Result<()> {
     if cfg!(target_os = "macos") {
         fs::write(&definition_path, render_launchd_plist(config, &exe_path))?;
         let domain = launchd_domain()?;
-        let _ = run_command("launchctl", &["bootout", &domain, &runtime::path_to_string(&definition_path)]);
-        run_command("launchctl", &["bootstrap", &domain, &runtime::path_to_string(&definition_path)])?;
-        run_command("launchctl", &["enable", &format!("{domain}/{}", runtime::service_name())])?;
+        let _ = run_command(
+            "launchctl",
+            &[
+                "bootout",
+                &domain,
+                &runtime::path_to_string(&definition_path),
+            ],
+        );
+        run_command(
+            "launchctl",
+            &[
+                "bootstrap",
+                &domain,
+                &runtime::path_to_string(&definition_path),
+            ],
+        )?;
+        run_command(
+            "launchctl",
+            &["enable", &format!("{domain}/{}", runtime::service_name())],
+        )?;
         if start_now {
-            run_command("launchctl", &["kickstart", "-k", &format!("{domain}/{}", runtime::service_name())])?;
+            run_command(
+                "launchctl",
+                &[
+                    "kickstart",
+                    "-k",
+                    &format!("{domain}/{}", runtime::service_name()),
+                ],
+            )?;
         }
     } else if cfg!(target_os = "windows") {
         let runner_path = runtime::windows_service_runner_path(config);
@@ -53,14 +78,32 @@ pub fn install(config: &Config, start_now: bool) -> anyhow::Result<()> {
         fs::write(&definition_path, render_systemd_unit(config, &exe_path))?;
         run_command("systemctl", &["--user", "daemon-reload"])?;
         if start_now {
-            run_command("systemctl", &["--user", "enable", "--now", &format!("{}.service", runtime::service_name())])?;
+            run_command(
+                "systemctl",
+                &[
+                    "--user",
+                    "enable",
+                    "--now",
+                    &format!("{}.service", runtime::service_name()),
+                ],
+            )?;
         } else {
-            run_command("systemctl", &["--user", "enable", &format!("{}.service", runtime::service_name())])?;
+            run_command(
+                "systemctl",
+                &[
+                    "--user",
+                    "enable",
+                    &format!("{}.service", runtime::service_name()),
+                ],
+            )?;
         }
     }
 
     println!("Installed {} auto-start service.", runtime::cli_name());
-    println!("Status: {}", format!("{} daemon service status", runtime::cli_name()));
+    println!(
+        "Status: {}",
+        format!("{} daemon service status", runtime::cli_name())
+    );
     Ok(())
 }
 
@@ -69,18 +112,36 @@ pub fn uninstall(config: &Config) -> anyhow::Result<()> {
 
     if cfg!(target_os = "macos") {
         let domain = launchd_domain()?;
-        let _ = run_command("launchctl", &["bootout", &domain, &runtime::path_to_string(&definition_path)]);
+        let _ = run_command(
+            "launchctl",
+            &[
+                "bootout",
+                &domain,
+                &runtime::path_to_string(&definition_path),
+            ],
+        );
         if definition_path.exists() {
             fs::remove_file(&definition_path)?;
         }
     } else if cfg!(target_os = "windows") {
-        let _ = run_command("schtasks", &["/Delete", "/TN", runtime::service_name(), "/F"]);
+        let _ = run_command(
+            "schtasks",
+            &["/Delete", "/TN", runtime::service_name(), "/F"],
+        );
         let runner_path = runtime::windows_service_runner_path(config);
         if runner_path.exists() {
             fs::remove_file(runner_path)?;
         }
     } else {
-        let _ = run_command("systemctl", &["--user", "disable", "--now", &format!("{}.service", runtime::service_name())]);
+        let _ = run_command(
+            "systemctl",
+            &[
+                "--user",
+                "disable",
+                "--now",
+                &format!("{}.service", runtime::service_name()),
+            ],
+        );
         let _ = run_command("systemctl", &["--user", "daemon-reload"]);
         if definition_path.exists() {
             fs::remove_file(&definition_path)?;
@@ -96,11 +157,25 @@ pub fn start(config: &Config) -> anyhow::Result<()> {
 
     if cfg!(target_os = "macos") {
         let domain = launchd_domain()?;
-        run_command("launchctl", &["kickstart", "-k", &format!("{domain}/{}", runtime::service_name())])?;
+        run_command(
+            "launchctl",
+            &[
+                "kickstart",
+                "-k",
+                &format!("{domain}/{}", runtime::service_name()),
+            ],
+        )?;
     } else if cfg!(target_os = "windows") {
         run_command("schtasks", &["/Run", "/TN", runtime::service_name()])?;
     } else {
-        run_command("systemctl", &["--user", "start", &format!("{}.service", runtime::service_name())])?;
+        run_command(
+            "systemctl",
+            &[
+                "--user",
+                "start",
+                &format!("{}.service", runtime::service_name()),
+            ],
+        )?;
     }
 
     println!("Started {} service.", runtime::cli_name());
@@ -112,11 +187,25 @@ pub fn stop(config: &Config) -> anyhow::Result<()> {
 
     if cfg!(target_os = "macos") {
         let domain = launchd_domain()?;
-        run_command("launchctl", &["bootout", &domain, &runtime::path_to_string(&runtime::service_definition_path(config))])?;
+        run_command(
+            "launchctl",
+            &[
+                "bootout",
+                &domain,
+                &runtime::path_to_string(&runtime::service_definition_path(config)),
+            ],
+        )?;
     } else if cfg!(target_os = "windows") {
         run_command("schtasks", &["/End", "/TN", runtime::service_name()])?;
     } else {
-        run_command("systemctl", &["--user", "stop", &format!("{}.service", runtime::service_name())])?;
+        run_command(
+            "systemctl",
+            &[
+                "--user",
+                "stop",
+                &format!("{}.service", runtime::service_name()),
+            ],
+        )?;
     }
 
     println!("Stopped {} service.", runtime::cli_name());
@@ -128,12 +217,26 @@ pub fn restart(config: &Config) -> anyhow::Result<()> {
 
     if cfg!(target_os = "macos") {
         let domain = launchd_domain()?;
-        run_command("launchctl", &["kickstart", "-k", &format!("{domain}/{}", runtime::service_name())])?;
+        run_command(
+            "launchctl",
+            &[
+                "kickstart",
+                "-k",
+                &format!("{domain}/{}", runtime::service_name()),
+            ],
+        )?;
     } else if cfg!(target_os = "windows") {
         let _ = run_command("schtasks", &["/End", "/TN", runtime::service_name()]);
         run_command("schtasks", &["/Run", "/TN", runtime::service_name()])?;
     } else {
-        run_command("systemctl", &["--user", "restart", &format!("{}.service", runtime::service_name())])?;
+        run_command(
+            "systemctl",
+            &[
+                "--user",
+                "restart",
+                &format!("{}.service", runtime::service_name()),
+            ],
+        )?;
     }
 
     println!("Restarted {} service.", runtime::cli_name());
@@ -145,13 +248,33 @@ pub fn status(config: &Config) -> anyhow::Result<()> {
 
     if cfg!(target_os = "macos") {
         let domain = launchd_domain()?;
-        let output = run_command("launchctl", &["print", &format!("{domain}/{}", runtime::service_name())])?;
+        let output = run_command(
+            "launchctl",
+            &["print", &format!("{domain}/{}", runtime::service_name())],
+        )?;
         println!("{output}");
     } else if cfg!(target_os = "windows") {
-        let output = run_command("schtasks", &["/Query", "/TN", runtime::service_name(), "/V", "/FO", "LIST"])?;
+        let output = run_command(
+            "schtasks",
+            &[
+                "/Query",
+                "/TN",
+                runtime::service_name(),
+                "/V",
+                "/FO",
+                "LIST",
+            ],
+        )?;
         println!("{output}");
     } else {
-        let output = run_command("systemctl", &["--user", "status", &format!("{}.service", runtime::service_name())])?;
+        let output = run_command(
+            "systemctl",
+            &[
+                "--user",
+                "status",
+                &format!("{}.service", runtime::service_name()),
+            ],
+        )?;
         println!("{output}");
     }
 
@@ -159,7 +282,8 @@ pub fn status(config: &Config) -> anyhow::Result<()> {
 }
 
 pub fn print_definition(config: &Config) -> anyhow::Result<()> {
-    let exe_path = std::env::current_exe().context("Could not determine the gcpa executable path")?;
+    let exe_path =
+        std::env::current_exe().context("Could not determine the gcpa executable path")?;
     let definition = if cfg!(target_os = "macos") {
         render_launchd_plist(config, &exe_path)
     } else if cfg!(target_os = "windows") {
@@ -168,7 +292,11 @@ pub fn print_definition(config: &Config) -> anyhow::Result<()> {
         render_systemd_unit(config, &exe_path)
     };
 
-    println!("# {} definition path: {}", runtime::service_manager_label(), runtime::service_definition_path(config).display());
+    println!(
+        "# {} definition path: {}",
+        runtime::service_manager_label(),
+        runtime::service_definition_path(config).display()
+    );
     println!("{definition}");
     Ok(())
 }
@@ -295,7 +423,10 @@ fn run_command(program: &str, args: &[&str]) -> anyhow::Result<String> {
 }
 
 fn shell_escape(value: &str) -> String {
-    if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | ':')) {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | ':'))
+    {
         value.to_string()
     } else {
         format!("\"{}\"", value.replace('"', "\\\""))

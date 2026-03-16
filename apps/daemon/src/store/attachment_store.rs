@@ -14,6 +14,13 @@ pub struct AttachmentSummary {
     pub uploaded_at: String,
 }
 
+#[derive(Clone)]
+pub struct AttachmentRecord {
+    pub name: String,
+    pub mime_type: String,
+    pub file_path: String,
+}
+
 fn classify_kind(mime_type: &str) -> &str {
     if mime_type.starts_with("image/") {
         "image"
@@ -70,6 +77,35 @@ pub fn save_attachment(
     })
 }
 
+pub fn get_attachments_by_ids(
+    db: &Database,
+    owner_id: &str,
+    thread_id: Option<&str>,
+    attachment_ids: &[String],
+) -> Vec<AttachmentRecord> {
+    let Ok(conn) = db.lock() else {
+        return Vec::new();
+    };
 
-
-
+    attachment_ids
+        .iter()
+        .filter_map(|attachment_id| {
+            conn.query_row(
+                "SELECT name, mime_type, file_path
+                 FROM attachments
+                 WHERE id = ?1
+                   AND github_user_id = ?2
+                   AND (?3 IS NULL OR thread_id IS NULL OR thread_id = ?3)",
+                rusqlite::params![attachment_id, owner_id, thread_id],
+                |row| {
+                    Ok(AttachmentRecord {
+                        name: row.get(0)?,
+                        mime_type: row.get(1)?,
+                        file_path: row.get(2)?,
+                    })
+                },
+            )
+            .ok()
+        })
+        .collect()
+}

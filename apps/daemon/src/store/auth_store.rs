@@ -41,8 +41,14 @@ pub struct DeviceAuthStart {
 #[serde(untagged)]
 pub enum DeviceAuthPoll {
     Pending(DeviceAuthPollPending),
-    Complete { status: String, session: UserSession },
-    Failed { status: String, error: String },
+    Complete {
+        status: String,
+        session: UserSession,
+    },
+    Failed {
+        status: String,
+        error: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -135,10 +141,7 @@ pub fn create_local_session(db: &Database, config: &Config) -> UserSession {
 
 pub fn destroy_session(db: &Database, token: &str) {
     let conn = db.conn.lock().unwrap();
-    let _ = conn.execute(
-        "DELETE FROM app_sessions WHERE session_token = ?1",
-        [token],
-    );
+    let _ = conn.execute("DELETE FROM app_sessions WHERE session_token = ?1", [token]);
 }
 
 pub fn create_device_auth(

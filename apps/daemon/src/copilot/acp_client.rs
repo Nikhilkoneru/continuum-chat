@@ -51,6 +51,43 @@ pub struct ReplayedMessage {
     pub tool_calls: Option<Vec<serde_json::Value>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUserInputRequest {
+    pub request_id: String,
+    pub session_id: String,
+    pub question: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    pub allow_freeform: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPermissionOption {
+    pub option_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPermissionRequest {
+    pub request_id: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
+    pub question: String,
+    pub options: Vec<PendingPermissionOption>,
+    pub created_at: String,
+}
+
 pub struct AcpConnection {
     child: Mutex<Child>,
     pub(crate) writer: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -60,6 +97,8 @@ pub struct AcpConnection {
     initialized: Mutex<bool>,
     pub(crate) cached_models: Mutex<Option<serde_json::Value>>,
     pub(crate) capabilities: Mutex<AgentCapabilities>,
+    pending_user_inputs: Arc<Mutex<HashMap<String, PendingUserInputRequest>>>,
+    pending_permissions: Arc<Mutex<HashMap<String, PendingPermissionRequest>>>,
 }
 
 impl AcpConnection {
@@ -72,8 +111,14 @@ impl AcpConnection {
             .stderr(std::process::Stdio::piped())
             .spawn()?;
 
-        let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("No stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("No stdout"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No stdout"))?;
         let stderr = child.stderr.take();
 
         // Log stderr
@@ -90,12 +135,17 @@ impl AcpConnection {
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let pending_user_inputs: Arc<Mutex<HashMap<String, PendingUserInputRequest>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_permissions: Arc<Mutex<HashMap<String, PendingPermissionRequest>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         // Spawn reader task
         let pending_clone = pending.clone();
         let notif_tx = notification_tx.clone();
         let (response_tx, mut response_rx) = mpsc::unbounded_channel::<String>();
-        let response_tx_clone = response_tx.clone();
+        let pending_user_inputs_clone = pending_user_inputs.clone();
+        let pending_permissions_clone = pending_permissions.clone();
 
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -123,59 +173,54 @@ impl AcpConnection {
                         let _ = notif_tx.send(notif);
                     }
                     Some(AcpMessage::ServerRequest(req)) => {
-                        tracing::info!("ACP server request: method={} id={:?} params={}", 
-                            req.method, req.id, serde_json::to_string(&req.params).unwrap_or_default());
-                        
-                        // Auto-approve tool permissions and other server requests
-                        let response = match req.method.as_str() {
-                            "session/requestPermission" | "session/request_permission" | "session/request" => {
-                                // Pick the "allow always" or "allow once" option
-                                let option_id = req.params.as_ref()
-                                    .and_then(|p| p.get("options"))
-                                    .and_then(|opts| opts.as_array())
-                                    .and_then(|arr| {
-                                        // Prefer "allow_always", fall back to "allow_once"
-                                        arr.iter()
-                                            .find(|o| o.get("optionId").and_then(|v| v.as_str()) == Some("allow_always"))
-                                            .or_else(|| arr.iter().find(|o| o.get("kind").and_then(|v| v.as_str()) == Some("allow_always")))
-                                            .or_else(|| arr.iter().find(|o| o.get("optionId").and_then(|v| v.as_str()) == Some("allow_once")))
-                                            .or_else(|| arr.first())
-                                    })
-                                    .and_then(|o| o.get("optionId").and_then(|v| v.as_str()))
-                                    .unwrap_or("allow_always");
-                                
-                                tracing::info!("Auto-approving permission with optionId: {option_id}");
-                                json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req.id,
-                                    "result": { "selectedOptionId": option_id }
-                                })
+                        tracing::info!(
+                            "ACP server request: method={} id={:?} params={}",
+                            req.method,
+                            req.id,
+                            serde_json::to_string(&req.params).unwrap_or_default()
+                        );
+
+                        match req.method.as_str() {
+                            "session/requestPermission"
+                            | "session/request_permission"
+                            | "session/request" => {
+                                if let Some(pending_request) = Self::parse_permission_request(&req)
+                                {
+                                    pending_permissions_clone.lock().await.insert(
+                                        pending_request.request_id.clone(),
+                                        pending_request,
+                                    );
+                                }
                             }
                             "session/userInput" => {
-                                // Auto-respond with empty input for now
-                                json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req.id,
-                                    "result": { "input": "" }
-                                })
+                                if let Some(pending_request) = Self::parse_user_input_request(&req)
+                                {
+                                    pending_user_inputs_clone.lock().await.insert(
+                                        pending_request.request_id.clone(),
+                                        pending_request,
+                                    );
+                                }
                             }
                             _ => {
-                                // Generic success response
-                                json!({
+                                let response = json!({
                                     "jsonrpc": "2.0",
                                     "id": req.id,
                                     "result": {}
-                                })
+                                });
+                                let line =
+                                    serde_json::to_string(&response).unwrap_or_default() + "\n";
+                                let _ = response_tx.send(line);
                             }
-                        };
-                        let line = serde_json::to_string(&response).unwrap_or_default() + "\n";
-                        let _ = response_tx_clone.send(line);
+                        }
 
                         // Also forward as notification so the SSE handler can emit events
                         let notif = JsonRpcNotification {
                             jsonrpc: "2.0".into(),
                             method: format!("_server_request/{}", req.method),
-                            params: req.params,
+                            params: Some(json!({
+                                "requestId": req.id.as_ref().map(AcpConnection::rpc_request_id),
+                                "request": req.params,
+                            })),
                         };
                         let _ = notif_tx.send(notif);
                     }
@@ -212,6 +257,8 @@ impl AcpConnection {
             initialized: Mutex::new(false),
             cached_models: Mutex::new(None),
             capabilities: Mutex::new(AgentCapabilities::default()),
+            pending_user_inputs,
+            pending_permissions,
         };
 
         conn.initialize().await?;
@@ -403,6 +450,95 @@ impl AcpConnection {
             out.push(notif);
         }
         out
+    }
+
+    pub async fn get_pending_user_input_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<PendingUserInputRequest> {
+        self.pending_user_inputs
+            .lock()
+            .await
+            .values()
+            .find(|request| request.session_id == session_id)
+            .cloned()
+    }
+
+    pub async fn get_pending_user_input(
+        &self,
+        request_id: &str,
+    ) -> Option<PendingUserInputRequest> {
+        self.pending_user_inputs
+            .lock()
+            .await
+            .get(request_id)
+            .cloned()
+    }
+
+    pub async fn get_pending_permissions_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<PendingPermissionRequest> {
+        self.pending_permissions
+            .lock()
+            .await
+            .values()
+            .filter(|request| request.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+
+    pub async fn get_pending_permission(
+        &self,
+        request_id: &str,
+    ) -> Option<PendingPermissionRequest> {
+        self.pending_permissions
+            .lock()
+            .await
+            .get(request_id)
+            .cloned()
+    }
+
+    pub async fn respond_to_user_input(&self, request_id: &str, input: &str) -> anyhow::Result<()> {
+        self.send_server_request_response(request_id, json!({ "input": input }))
+            .await?;
+        self.pending_user_inputs.lock().await.remove(request_id);
+        Ok(())
+    }
+
+    pub async fn respond_to_permission_request(
+        &self,
+        request_id: &str,
+        option_id: &str,
+    ) -> anyhow::Result<()> {
+        self.send_server_request_response(
+            request_id,
+            json!({ "outcome": { "optionId": option_id }, "selectedOptionId": option_id }),
+        )
+        .await?;
+        self.pending_permissions.lock().await.remove(request_id);
+        Ok(())
+    }
+
+    async fn send_server_request_response(
+        &self,
+        request_id: &str,
+        result: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let rpc_id = request_id
+            .parse::<u64>()
+            .map(serde_json::Value::from)
+            .unwrap_or_else(|_| serde_json::Value::String(request_id.to_string()));
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": result,
+        });
+        let line = serde_json::to_string(&msg)? + "\n";
+        let mut writer = self.writer.lock().await;
+        writer.write_all(line.as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
     }
 
     /// Get discovered agent capabilities.
@@ -711,5 +847,120 @@ impl AcpConnection {
         }
 
         current_tool_calls.push(next_tool_call);
+    }
+
+    fn parse_user_input_request(req: &JsonRpcRequest) -> Option<PendingUserInputRequest> {
+        let request_id = Self::rpc_request_id(req.id.as_ref()?);
+        let params = req.params.as_ref()?;
+        let session_id = params.get("sessionId")?.as_str()?.to_string();
+        let question = params
+            .get("question")
+            .and_then(|value| value.as_str())
+            .or_else(|| params.get("prompt").and_then(|value| value.as_str()))
+            .unwrap_or("Copilot needs your input.")
+            .to_string();
+        let choices = params
+            .get("choices")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let allow_freeform = params
+            .get("allowFreeform")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+
+        Some(PendingUserInputRequest {
+            request_id,
+            session_id,
+            question,
+            choices,
+            allow_freeform,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn parse_permission_request(req: &JsonRpcRequest) -> Option<PendingPermissionRequest> {
+        let request_id = Self::rpc_request_id(req.id.as_ref()?);
+        let params = req.params.as_ref()?;
+        let session_id = params.get("sessionId")?.as_str()?.to_string();
+        let update = params.get("update");
+        let tool_call = params.get("toolCall").or(update);
+        let tool_call_id = tool_call
+            .and_then(|value| value.get("toolCallId").or_else(|| value.get("id")))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let tool_name = tool_call
+            .and_then(|value| value.get("title").or_else(|| value.get("name")))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let tool_kind = tool_call
+            .and_then(|value| value.get("kind"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let options = params
+            .get("options")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|option| {
+                        let option_id = option.get("optionId")?.as_str()?.to_string();
+                        let label = option
+                            .get("label")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(&option_id)
+                            .to_string();
+                        let kind = option
+                            .get("kind")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned);
+                        Some(PendingPermissionOption {
+                            option_id,
+                            label,
+                            kind,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let question = params
+            .get("message")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                tool_call
+                    .and_then(|value| value.get("title"))
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| tool_name.as_deref())
+            .map(|value| format!("Allow {value}?"))
+            .unwrap_or_else(|| "Copilot needs permission to continue.".to_string());
+
+        Some(PendingPermissionRequest {
+            request_id,
+            session_id,
+            tool_call_id,
+            tool_name,
+            tool_kind,
+            question,
+            options,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn rpc_request_id(id: &serde_json::Value) -> String {
+        if let Some(value) = id.as_str() {
+            value.to_string()
+        } else if let Some(value) = id.as_u64() {
+            value.to_string()
+        } else if let Some(value) = id.as_i64() {
+            value.to_string()
+        } else {
+            id.to_string()
+        }
     }
 }

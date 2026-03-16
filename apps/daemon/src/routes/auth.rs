@@ -25,7 +25,9 @@ async fn capabilities(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
     let config = &state.config;
@@ -73,11 +75,13 @@ async fn get_current_session(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
-    let session = extract_bearer_token(&headers)
-        .and_then(|t| get_session(&state.db, &state.config, &t));
+    let session =
+        extract_bearer_token(&headers).and_then(|t| get_session(&state.db, &state.config, &t));
 
     match session {
         Some(s) => Ok(Json(json!({
@@ -100,11 +104,15 @@ async fn create_local_session(
     headers: HeaderMap,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
     if state.config.app_auth_mode != "local" {
-        return Err(AppError::Conflict("Local auth is not active on this daemon right now.".into()));
+        return Err(AppError::Conflict(
+            "Local auth is not active on this daemon right now.".into(),
+        ));
     }
 
     // Return existing session if valid
@@ -139,7 +147,9 @@ async fn logout(
     headers: HeaderMap,
 ) -> Result<axum::http::StatusCode, AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
     if let Some(token) = extract_bearer_token(&headers) {
@@ -175,16 +185,20 @@ async fn device_start(
     headers: HeaderMap,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
     if state.config.app_auth_mode != "github-device" {
         return Err(AppError::Conflict("GitHub sign-in is disabled.".into()));
     }
 
-    let client_id = state.config.github_client_id.as_ref().ok_or_else(|| {
-        AppError::BadGateway("GITHUB_CLIENT_ID not configured.".into())
-    })?;
+    let client_id = state
+        .config
+        .github_client_id
+        .as_ref()
+        .ok_or_else(|| AppError::BadGateway("GITHUB_CLIENT_ID not configured.".into()))?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -199,7 +213,9 @@ async fn device_start(
         .map_err(|e| AppError::BadGateway(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::BadGateway("Failed to start GitHub device flow.".into()));
+        return Err(AppError::BadGateway(
+            "Failed to start GitHub device flow.".into(),
+        ));
     }
 
     let body: DeviceCodeGitHubResponse = resp
@@ -217,7 +233,10 @@ async fn device_start(
         body.interval,
     );
 
-    Ok((axum::http::StatusCode::CREATED, Json(serde_json::to_value(device_auth).unwrap())))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::to_value(device_auth).unwrap()),
+    ))
 }
 
 async fn device_poll(
@@ -226,16 +245,20 @@ async fn device_poll(
     axum::extract::Path(flow_id): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if !check_service_access(&headers, &state.config) {
-        return Err(AppError::Unauthorized("Missing or invalid service access token.".into()));
+        return Err(AppError::Unauthorized(
+            "Missing or invalid service access token.".into(),
+        ));
     }
 
     if state.config.app_auth_mode != "github-device" {
         return Err(AppError::Conflict("GitHub sign-in is disabled.".into()));
     }
 
-    let client_id = state.config.github_client_id.as_ref().ok_or_else(|| {
-        AppError::BadGateway("GITHUB_CLIENT_ID not configured.".into())
-    })?;
+    let client_id = state
+        .config
+        .github_client_id
+        .as_ref()
+        .ok_or_else(|| AppError::BadGateway("GITHUB_CLIENT_ID not configured.".into()))?;
 
     let record = auth_store::get_device_auth(&state.db, &flow_id);
     let record = match record {
@@ -249,15 +272,21 @@ async fn device_poll(
     };
 
     // Check if already complete
-    if let Some(payload) = auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id) {
+    if let Some(payload) =
+        auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id)
+    {
         if !matches!(&payload, auth_store::DeviceAuthPoll::Pending(_)) {
             return Ok(Json(serde_json::to_value(payload).unwrap()));
         }
     }
 
     // Check rate limit
-    if chrono::Utc::now() < chrono::DateTime::parse_from_rfc3339(&record.next_poll_at).unwrap_or_default() {
-        if let Some(payload) = auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id) {
+    if chrono::Utc::now()
+        < chrono::DateTime::parse_from_rfc3339(&record.next_poll_at).unwrap_or_default()
+    {
+        if let Some(payload) =
+            auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id)
+        {
             return Ok(Json(serde_json::to_value(payload).unwrap()));
         }
     }
@@ -277,7 +306,9 @@ async fn device_poll(
         .map_err(|e| AppError::BadGateway(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Err(AppError::BadGateway("Failed to poll GitHub device authorization.".into()));
+        return Err(AppError::BadGateway(
+            "Failed to poll GitHub device authorization.".into(),
+        ));
     }
 
     let body: DeviceTokenGitHubResponse = resp
@@ -309,24 +340,40 @@ async fn device_poll(
             auth_store::schedule_device_poll(&state.db, &flow_id, Some(record.interval + 5));
         }
         Some("access_denied") => {
-            auth_store::fail_device_auth(&state.db, &flow_id, "denied", "GitHub device authorization was denied.");
+            auth_store::fail_device_auth(
+                &state.db,
+                &flow_id,
+                "denied",
+                "GitHub device authorization was denied.",
+            );
         }
         Some("expired_token") => {
-            auth_store::fail_device_auth(&state.db, &flow_id, "expired", "GitHub device code expired. Start sign-in again.");
+            auth_store::fail_device_auth(
+                &state.db,
+                &flow_id,
+                "expired",
+                "GitHub device code expired. Start sign-in again.",
+            );
         }
         _ => {
-            let desc = body.error_description.unwrap_or_else(|| "Unexpected device auth state.".into());
+            let desc = body
+                .error_description
+                .unwrap_or_else(|| "Unexpected device auth state.".into());
             return Err(AppError::BadGateway(desc));
         }
     }
 
     match auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id) {
         Some(payload) => Ok(Json(serde_json::to_value(payload).unwrap())),
-        None => Ok(Json(json!({ "status": "expired", "error": "Flow not found." }))),
+        None => Ok(Json(
+            json!({ "status": "expired", "error": "Flow not found." }),
+        )),
     }
 }
 
-async fn fetch_github_profile(access_token: &str) -> Result<(String, String, Option<String>), AppError> {
+async fn fetch_github_profile(
+    access_token: &str,
+) -> Result<(String, String, Option<String>), AppError> {
     let client = reqwest::Client::new();
     let resp = client
         .get("https://api.github.com/user")
@@ -342,7 +389,10 @@ async fn fetch_github_profile(access_token: &str) -> Result<(String, String, Opt
         return Err(AppError::BadGateway("Failed to load GitHub user.".into()));
     }
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| AppError::BadGateway(e.to_string()))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::BadGateway(e.to_string()))?;
     let login = body["login"].as_str().unwrap_or("unknown").to_string();
     let name = body["name"].as_str().unwrap_or(&login).to_string();
     let avatar_url = body["avatar_url"].as_str().map(|s| s.to_string());

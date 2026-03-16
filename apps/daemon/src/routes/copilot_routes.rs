@@ -12,7 +12,10 @@ use crate::store::preferences_store;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/copilot/preferences", get(get_preferences).put(set_preferences))
+        .route(
+            "/api/copilot/preferences",
+            get(get_preferences).put(set_preferences),
+        )
         .route("/api/copilot/status", get(get_status))
         .route("/api/copilot/sessions/:session_id", delete(delete_session))
 }

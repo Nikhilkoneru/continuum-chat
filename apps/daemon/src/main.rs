@@ -142,7 +142,12 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("gcpa {}", report.runtime.version);
                 for check in report.checks {
-                    println!("[{}] {} - {}", if check.ok { "ok" } else { "warn" }, check.name, check.detail);
+                    println!(
+                        "[{}] {} - {}",
+                        if check.ok { "ok" } else { "warn" },
+                        check.name,
+                        check.detail
+                    );
                 }
             }
             Ok(())
@@ -157,7 +162,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("Log: {}", runtime.log_path);
                 println!("Database: {}", runtime.data_path);
                 println!("Media: {}", runtime.media_path);
-                println!("Service: {} ({})", runtime.service_name, runtime.service_manager);
+                println!(
+                    "Service: {} ({})",
+                    runtime.service_name, runtime.service_manager
+                );
                 println!("Service definition: {}", runtime.service_definition_path);
             }
             Ok(())

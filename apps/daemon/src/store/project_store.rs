@@ -12,7 +12,12 @@ pub struct ProjectSummary {
     pub updated_at: String,
 }
 
-pub fn create_project(db: &Database, owner_id: &str, name: &str, description: &str) -> ProjectSummary {
+pub fn create_project(
+    db: &Database,
+    owner_id: &str,
+    name: &str,
+    description: &str,
+) -> ProjectSummary {
     let id = Uuid::new_v4().to_string();
     let now = now_iso();
     if let Ok(conn) = db.lock() {
@@ -66,5 +71,3 @@ pub fn get_project(db: &Database, owner_id: &str, project_id: &str) -> Option<Pr
     )
     .ok()
 }
-
-

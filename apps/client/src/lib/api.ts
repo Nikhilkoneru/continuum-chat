@@ -247,6 +247,16 @@ export const respondToUserInput = (payload: { threadId: string; requestId: strin
     sessionToken,
   );
 
+export const respondToPermissionRequest = (payload: { threadId: string; requestId: string; optionId: string }, sessionToken: string) =>
+  fetchJson<{ accepted: boolean }>(
+    '/api/chat/permission',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    sessionToken,
+  );
+
 export async function streamChat(
   input: ChatStreamInput,
   sessionToken: string | undefined,

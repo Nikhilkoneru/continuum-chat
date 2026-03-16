@@ -45,18 +45,15 @@ pub fn get_session(db: &Database, config: &Config, token: &str) -> Option<AuthSe
              WHERE s.session_token = ?1 AND s.expires_at >= ?2 AND s.auth_mode = ?3",
         )
         .ok()?;
-    stmt.query_row(
-        rusqlite::params![token, now, config.app_auth_mode],
-        |row| {
-            Ok(AuthSession {
-                session_token: row.get(0)?,
-                user_id: row.get(2)?,
-                login: row.get(3)?,
-                name: row.get(4)?,
-                avatar_url: row.get(5)?,
-            })
-        },
-    )
+    stmt.query_row(rusqlite::params![token, now, config.app_auth_mode], |row| {
+        Ok(AuthSession {
+            session_token: row.get(0)?,
+            user_id: row.get(2)?,
+            login: row.get(3)?,
+            name: row.get(4)?,
+            avatar_url: row.get(5)?,
+        })
+    })
     .ok()
 }
 
@@ -77,9 +74,7 @@ pub fn require_session(
                     .into(),
             )
         } else {
-            crate::error::AppError::Unauthorized(
-                "You must sign in to use this product.".into(),
-            )
+            crate::error::AppError::Unauthorized("You must sign in to use this product.".into())
         }
     })?;
     get_session(db, config, &token).ok_or_else(|| {

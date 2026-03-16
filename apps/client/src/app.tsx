@@ -4,6 +4,7 @@ import type {
   AttachmentSummary,
   ApiHealth,
   ChatMessage,
+  ChatPermissionRequest,
   ChatToolActivity,
   CopilotPreferences,
   ModelOption,
@@ -21,6 +22,7 @@ import {
   getCopilotPreferences,
   getHealth,
   getModels,
+  respondToPermissionRequest,
   respondToUserInput,
   getProjects,
   getThread,
@@ -89,6 +91,16 @@ const upsertToolActivity = (activities: ChatToolActivity[] | undefined, nextActi
   }
   return [...current, nextActivity];
 };
+const upsertPermissionRequest = (requests: ChatPermissionRequest[] | undefined, nextRequest: ChatPermissionRequest) => {
+  const current = requests ?? [];
+  const existingIndex = current.findIndex((request) => request.requestId === nextRequest.requestId);
+  if (existingIndex >= 0) {
+    return current.map((request, index) => (index === existingIndex ? nextRequest : request));
+  }
+  return [...current, nextRequest];
+};
+const removePermissionRequest = (requests: ChatPermissionRequest[] | undefined, requestId: string) =>
+  (requests ?? []).filter((request) => request.requestId !== requestId);
 const toLocalChatSummary = (thread: ThreadSummary): LocalChat => ({ ...thread, messages: [], draftAttachments: [], hasLoadedMessages: false });
 const mergeThreadIntoLocal = (thread: ThreadSummary, existing?: LocalChat): LocalChat => ({
   ...thread,
@@ -96,6 +108,7 @@ const mergeThreadIntoLocal = (thread: ThreadSummary, existing?: LocalChat): Loca
   draftAttachments: existing?.draftAttachments ?? [],
   hasLoadedMessages: existing?.hasLoadedMessages ?? false,
   pendingUserInputRequest: existing?.pendingUserInputRequest,
+  pendingPermissionRequests: existing?.pendingPermissionRequests ?? [],
 });
 const mergeThreadDetailIntoLocal = (thread: ThreadDetail, existing?: LocalChat): LocalChat => ({
   ...thread,
@@ -103,6 +116,7 @@ const mergeThreadDetailIntoLocal = (thread: ThreadDetail, existing?: LocalChat):
   draftAttachments: existing?.draftAttachments ?? [],
   hasLoadedMessages: true,
   pendingUserInputRequest: thread.pendingUserInputRequest,
+  pendingPermissionRequests: thread.pendingPermissionRequests ?? existing?.pendingPermissionRequests ?? [],
 });
 const summarizeTitle = (prompt: string) => (prompt.length > 42 ? `${prompt.slice(0, 42)}...` : prompt);
 
@@ -226,6 +240,7 @@ export default function App() {
   const [dragOverGroupId, setDragOverGroupId] = useState<string | 'inbox' | 'new-project' | null>(null);
   const [movingChatId, setMovingChatId] = useState<string | null>(null);
   const [respondingToUserInputId, setRespondingToUserInputId] = useState<string | null>(null);
+  const [respondingToPermissionId, setRespondingToPermissionId] = useState<string | null>(null);
   const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>({});
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -609,6 +624,29 @@ export default function App() {
     [selectedChat, session, updateChat],
   );
 
+  const handleRespondToPermission = useCallback(
+    async (requestId: string, optionId: string) => {
+      if (!session || !selectedChat) {
+        return;
+      }
+
+      setRespondingToPermissionId(requestId);
+      setError(null);
+      try {
+        await respondToPermissionRequest({ threadId: selectedChat.id, requestId, optionId }, session.sessionToken);
+        updateChat(selectedChat.id, (chat) => ({
+          ...chat,
+          pendingPermissionRequests: removePermissionRequest(chat.pendingPermissionRequests, requestId),
+        }));
+      } catch (permissionError) {
+        setError(permissionError instanceof Error ? permissionError.message : 'Unable to send the permission decision.');
+      } finally {
+        setRespondingToPermissionId((current) => (current === requestId ? null : current));
+      }
+    },
+    [selectedChat, session, updateChat],
+  );
+
   const handleCreateChat = useCallback(async (projectId?: string | null) => {
     if (!session) return;
     setError(null);
@@ -886,6 +924,7 @@ export default function App() {
       updatedAt: new Date().toISOString(),
       draftAttachments: [],
       pendingUserInputRequest: undefined,
+      pendingPermissionRequests: [],
       messages: sortMessages([
         ...chat.messages,
         createMessage('user', prompt, messageAttachments),
@@ -938,6 +977,46 @@ export default function App() {
                           ...(message.metadata ?? {}),
                           reasoning: event.content,
                           reasoningState: 'complete',
+                        },
+                      }
+                    : message,
+                ),
+              ),
+            }));
+            return;
+          }
+          if (event.type === 'status') {
+            updateChat(chatId, (chat) => ({
+              ...chat,
+              updatedAt: new Date().toISOString(),
+              messages: sortMessages(
+                chat.messages.map((message) =>
+                  message.id === assistantMessageId
+                    ? {
+                        ...message,
+                        metadata: {
+                          ...(message.metadata ?? {}),
+                          phase: event.phase,
+                        },
+                      }
+                    : message,
+                ),
+              ),
+            }));
+            return;
+          }
+          if (event.type === 'plan') {
+            updateChat(chatId, (chat) => ({
+              ...chat,
+              updatedAt: new Date().toISOString(),
+              messages: sortMessages(
+                chat.messages.map((message) =>
+                  message.id === assistantMessageId
+                    ? {
+                        ...message,
+                        metadata: {
+                          ...(message.metadata ?? {}),
+                          planItems: event.items,
                         },
                       }
                     : message,
@@ -1005,6 +1084,20 @@ export default function App() {
             }));
             return;
           }
+          if (event.type === 'permission_request') {
+            updateChat(chatId, (chat) => ({
+              ...chat,
+              pendingPermissionRequests: upsertPermissionRequest(chat.pendingPermissionRequests, event.request),
+            }));
+            return;
+          }
+          if (event.type === 'permission_cleared') {
+            updateChat(chatId, (chat) => ({
+              ...chat,
+              pendingPermissionRequests: removePermissionRequest(chat.pendingPermissionRequests, event.requestId),
+            }));
+            return;
+          }
           if (event.type === 'error') {
             if (flushTimer !== null) {
               clearTimeout(flushTimer);
@@ -1015,6 +1108,7 @@ export default function App() {
               ...chat,
               updatedAt: new Date().toISOString(),
               pendingUserInputRequest: undefined,
+              pendingPermissionRequests: [],
               messages: sortMessages(
                 chat.messages.map((message) =>
                   message.id === assistantMessageId ? { ...message, role: 'error', content: event.message } : message,
@@ -1037,6 +1131,7 @@ export default function App() {
                 ...chat,
                 updatedAt: new Date().toISOString(),
                 pendingUserInputRequest: undefined,
+                pendingPermissionRequests: [],
                 messages: sortMessages(
                   chat.messages.map((message) =>
                     message.id === assistantMessageId
@@ -1064,6 +1159,7 @@ export default function App() {
         ...chat,
         updatedAt: new Date().toISOString(),
         pendingUserInputRequest: undefined,
+        pendingPermissionRequests: [],
         messages: sortMessages(
           chat.messages.map((messageItem) =>
             messageItem.id === assistantMessageId ? { ...messageItem, role: 'error', content: message } : messageItem,
@@ -1441,6 +1537,34 @@ export default function App() {
                   <div key={attachment.id} className="composer-draft">
                     <span>{attachment.name}</span>
                     <button className="composer-draft-remove" onClick={() => handleRemoveAttachment(attachment.id)}>×</button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {selectedChat?.pendingPermissionRequests?.length ? (
+              <div className="permission-request-list">
+                {selectedChat.pendingPermissionRequests.map((request) => (
+                  <div key={request.requestId} className="user-input-card permission-request-card">
+                    <div className="status-label">Copilot needs permission</div>
+                    <div className="user-input-question">{request.question}</div>
+                    {request.toolName || request.toolKind ? (
+                      <div className="helper-text">
+                        {[request.toolName, request.toolKind].filter(Boolean).join(' · ')}
+                      </div>
+                    ) : null}
+                    <div className="user-input-choices">
+                      {request.options.map((option) => (
+                        <button
+                          key={option.optionId}
+                          className="ghost-button"
+                          disabled={respondingToPermissionId === request.requestId}
+                          onClick={() => void handleRespondToPermission(request.requestId, option.optionId)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>

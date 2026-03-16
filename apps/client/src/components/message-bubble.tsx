@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatToolActivity } from '@github-personal-assistant/shared';
+import { MarkdownContent } from './markdown-content.js';
 
 type MessageBubbleProps = {
   message: ChatMessage;
@@ -86,7 +87,22 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
           </details>
         ) : null}
 
-        {message.content ? <div className="msg-content">{message.content}</div> : null}
+        {message.metadata?.phase ? <div className="msg-phase">{message.metadata.phase}</div> : null}
+
+        {message.metadata?.planItems?.length ? (
+          <div className="msg-plan">
+            <div className="msg-plan-label">Plan</div>
+            <ul className="msg-plan-list">
+              {message.metadata.planItems.map((item, index) => (
+                <li key={`${message.id}-plan-${index}`}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {message.content ? (
+          isUser ? <div className="msg-content">{message.content}</div> : <MarkdownContent content={message.content} className="msg-content markdown-content" />
+        ) : null}
 
         {toolActivities.length ? (
           <div className="tool-activity-list">

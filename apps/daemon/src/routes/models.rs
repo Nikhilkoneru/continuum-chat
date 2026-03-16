@@ -26,7 +26,10 @@ async fn list_models(
         }
 
         if let Some(models_data) = conn.get_cached_models().await {
-            if let Some(available) = models_data.get("availableModels").and_then(|v| v.as_array()) {
+            if let Some(available) = models_data
+                .get("availableModels")
+                .and_then(|v| v.as_array())
+            {
                 let models: Vec<serde_json::Value> = available
                     .iter()
                     .map(|m| {

@@ -162,7 +162,10 @@ impl Config {
             assignment("PUBLIC_API_URL", self.public_api_url.as_deref()),
             assignment("TAILSCALE_API_URL", self.tailscale_api_url.as_deref()),
             assignment("REMOTE_ACCESS_MODE", Some(&self.remote_access_mode)),
-            assignment("APP_SUPPORT_DIR", Some(&self.app_support_dir.to_string_lossy())),
+            assignment(
+                "APP_SUPPORT_DIR",
+                Some(&self.app_support_dir.to_string_lossy()),
+            ),
             assignment("DATABASE_PATH", Some(&self.database_path.to_string_lossy())),
             assignment("MEDIA_ROOT", Some(&self.media_root.to_string_lossy())),
             assignment("LOG_FILE_PATH", Some(&self.log_file_path.to_string_lossy())),
@@ -171,7 +174,14 @@ impl Config {
             assignment("DAEMON_OWNER_ID", Some(&self.daemon_owner_id)),
             assignment("DAEMON_OWNER_LOGIN", Some(&self.daemon_owner_login)),
             assignment("DAEMON_OWNER_NAME", Some(&self.daemon_owner_name)),
-            assignment("COPILOT_USE_LOGGED_IN_USER", Some(if self.copilot_use_logged_in_user { "true" } else { "false" })),
+            assignment(
+                "COPILOT_USE_LOGGED_IN_USER",
+                Some(if self.copilot_use_logged_in_user {
+                    "true"
+                } else {
+                    "false"
+                }),
+            ),
             assignment("COPILOT_GITHUB_TOKEN", self.copilot_github_token.as_deref()),
             assignment("COPILOT_BIN", self.copilot_bin.as_deref()),
             assignment("GITHUB_CLIENT_ID", self.github_client_id.as_deref()),
@@ -211,7 +221,10 @@ fn default_config_path(app_support_dir: &std::path::Path) -> PathBuf {
 
 fn assignment(key: &str, value: Option<&str>) -> String {
     match value.filter(|raw| !raw.trim().is_empty()) {
-        Some(value) => format!("{key}=\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")),
+        Some(value) => format!(
+            "{key}=\"{}\"",
+            value.replace('\\', "\\\\").replace('"', "\\\"")
+        ),
         None => format!("{key}="),
     }
 }

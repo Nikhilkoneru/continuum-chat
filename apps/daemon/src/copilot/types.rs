@@ -52,10 +52,14 @@ impl AcpMessage {
 
         if has_id && has_method && !has_result_or_error {
             // Server-to-client request: has id + method, no result/error
-            serde_json::from_value::<JsonRpcRequest>(val).ok().map(AcpMessage::ServerRequest)
+            serde_json::from_value::<JsonRpcRequest>(val)
+                .ok()
+                .map(AcpMessage::ServerRequest)
         } else if has_id && has_result_or_error {
             // Response to our request
-            serde_json::from_value::<JsonRpcResponse>(val).ok().map(AcpMessage::Response)
+            serde_json::from_value::<JsonRpcResponse>(val)
+                .ok()
+                .map(AcpMessage::Response)
         } else if has_method {
             // Notification (no id)
             serde_json::from_value::<JsonRpcNotification>(val)
@@ -95,4 +99,3 @@ pub struct PromptCapabilities {
     pub audio: bool,
     pub embedded_context: bool,
 }
-

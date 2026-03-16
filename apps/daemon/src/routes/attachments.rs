@@ -38,7 +38,9 @@ async fn upload(
                     .await
                     .map_err(|e| AppError::BadRequest(e.to_string()))?;
                 if bytes.len() > MAX_ATTACHMENT_BYTES {
-                    return Err(AppError::BadRequest("Attachment exceeds the 20 MB limit.".into()));
+                    return Err(AppError::BadRequest(
+                        "Attachment exceeds the 20 MB limit.".into(),
+                    ));
                 }
                 file_bytes = Some(bytes.to_vec());
             }

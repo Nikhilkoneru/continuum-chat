@@ -56,6 +56,8 @@ struct ThreadDetailResponse {
     messages: Vec<ChatMessageResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_user_input_request: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pending_permission_requests: Vec<serde_json::Value>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -78,7 +80,8 @@ async fn list(
     axum::extract::Query(query): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session(&headers, &state.db, &state.config)?;
-    let threads = thread_store::list_threads(&state.db, &session.user_id, query.project_id.as_deref());
+    let threads =
+        thread_store::list_threads(&state.db, &session.user_id, query.project_id.as_deref());
     Ok(Json(json!({ "threads": threads })))
 }
 
@@ -113,7 +116,10 @@ async fn create(
         body.reasoning_effort.as_deref(),
     )
     .ok_or_else(|| AppError::NotFound("Project not found.".into()))?;
-    Ok((axum::http::StatusCode::CREATED, Json(json!({ "thread": thread }))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(json!({ "thread": thread })),
+    ))
 }
 
 async fn get_detail(
@@ -127,12 +133,15 @@ async fn get_detail(
     let messages = load_thread_messages(&state, &thread)
         .await
         .map_err(|error| AppError::Internal(error.to_string()))?;
+    let (pending_user_input_request, pending_permission_requests) =
+        load_pending_requests(&state, &thread).await;
 
     Ok(Json(json!({
         "thread": ThreadDetailResponse {
             thread,
             messages,
-            pending_user_input_request: None,
+            pending_user_input_request,
+            pending_permission_requests,
         }
     })))
 }
@@ -359,4 +368,30 @@ fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
         }
         Some(other) => Some(other.to_string()),
     }
+}
+
+async fn load_pending_requests(
+    state: &AppState,
+    thread: &ThreadSummary,
+) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
+    let Some(session_id) = thread.copilot_session_id.as_deref() else {
+        return (None, Vec::new());
+    };
+
+    let Ok(conn) = state.copilot.get_or_create_connection().await else {
+        return (None, Vec::new());
+    };
+
+    let pending_user_input = conn
+        .get_pending_user_input_for_session(session_id)
+        .await
+        .and_then(|request| serde_json::to_value(request).ok());
+    let pending_permissions = conn
+        .get_pending_permissions_for_session(session_id)
+        .await
+        .into_iter()
+        .filter_map(|request| serde_json::to_value(request).ok())
+        .collect();
+
+    (pending_user_input, pending_permissions)
 }
