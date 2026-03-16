@@ -127,6 +127,15 @@ pub fn update_thread_session(db: &Database, thread_id: &str, session_id: &str) {
     }
 }
 
+pub fn clear_thread_session(db: &Database, thread_id: &str) {
+    if let Ok(conn) = db.lock() {
+        let _ = conn.execute(
+            "UPDATE threads SET copilot_session_id = NULL, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_iso(), thread_id],
+        );
+    }
+}
+
 pub fn update_thread_preview(db: &Database, thread_id: &str, preview: &str) {
     let single_line = preview.split_whitespace().collect::<Vec<_>>().join(" ");
     let truncated = if single_line.len() > 160 {

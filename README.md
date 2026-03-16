@@ -121,9 +121,3 @@ cargo test --manifest-path apps/daemon/Cargo.toml
 ## Release process
 
 Tagged releases build platform archives for macOS, Linux, and Windows and publish them to GitHub Releases. The same release feed powers `gcpa update`.
-
-## Notes
-
-- The old GitHub Pages deployment path has been removed.
-- The old shared TypeScript package has been folded into the client package.
-- Local research material under `projects/` is not part of the shipped product surface.

@@ -274,7 +274,19 @@ async fn load_thread_messages(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let replayed_messages = conn.load_session_messages(copilot_session_id, &cwd).await?;
+    let replayed_messages = match conn.load_session_messages(copilot_session_id, &cwd).await {
+        Ok(messages) => messages,
+        Err(error) if is_missing_session_error(&error) => {
+            tracing::warn!(
+                "Stored ACP session {} for thread {} no longer exists; clearing it.",
+                copilot_session_id,
+                thread.id
+            );
+            thread_store::clear_thread_session(&state.db, &thread.id);
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
+    };
     let attachment_sets = attachment_store::list_message_attachments(&state.db, &thread.id)?;
 
     Ok(replayed_messages_to_chat_messages(
@@ -283,6 +295,11 @@ async fn load_thread_messages(
         &thread.id,
         &attachment_sets,
     ))
+}
+
+fn is_missing_session_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("Resource not found: Session") && message.contains("not found")
 }
 
 fn replayed_messages_to_chat_messages(

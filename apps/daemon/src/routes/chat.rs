@@ -397,27 +397,37 @@ fn build_prompt_content(
                 attachment.name
             ))
         })?;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let resource_uri = format!("file:///attachment/{}", attachment.name);
         let block = if attachment.mime_type.starts_with("image/") {
             json!({
                 "type": "image",
                 "mimeType": attachment.mime_type,
-                "mime_type": attachment.mime_type,
                 "data": encoded,
             })
         } else if attachment.mime_type.starts_with("audio/") {
             json!({
                 "type": "audio",
                 "mimeType": attachment.mime_type,
-                "mime_type": attachment.mime_type,
                 "data": encoded,
+            })
+        } else if let Ok(text) = std::str::from_utf8(&bytes) {
+            json!({
+                "type": "resource",
+                "resource": {
+                    "uri": resource_uri,
+                    "mimeType": attachment.mime_type,
+                    "text": text,
+                }
             })
         } else {
             json!({
                 "type": "resource",
-                "mimeType": attachment.mime_type,
-                "mime_type": attachment.mime_type,
-                "data": encoded,
+                "resource": {
+                    "uri": resource_uri,
+                    "mimeType": attachment.mime_type,
+                    "blob": encoded,
+                }
             })
         };
         content.push(block);
