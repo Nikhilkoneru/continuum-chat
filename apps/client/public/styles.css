@@ -80,34 +80,15 @@ button { cursor: pointer; }
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
   min-width: 0;
 }
 
-.brand-mark {
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
+.brand-lockup {
+  width: 152px;
+  max-width: 100%;
+  height: auto;
   display: block;
-}
-
-.brand-copy {
-  min-width: 0;
-}
-
-.sidebar-header h1 {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar-brand-subtitle {
-  color: var(--muted);
-  font-size: 0.74rem;
-  line-height: 1.2;
+  flex-shrink: 1;
 }
 
 .sidebar-subtitle { color: var(--muted); font-size: 0.82rem; }

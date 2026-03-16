@@ -1429,11 +1429,13 @@ export default function App() {
 
           <div className="sidebar-header">
             <div className="sidebar-brand">
-              <img className="brand-mark" src="./icons/continuum-mark.svg" alt="" aria-hidden="true" />
-              <div className="brand-copy">
-                <h1>Continuum Chat</h1>
-                <div className="sidebar-brand-subtitle">Local coding companion</div>
-              </div>
+              <img
+                className="brand-lockup"
+                src="./icons/continuum-lockup.svg"
+                alt="Continuum Chat"
+                width="152"
+                height="40"
+              />
             </div>
             <div className="sidebar-header-actions">
               <IconButton label="Start new chat" onClick={() => void handleCreateChat()}>
