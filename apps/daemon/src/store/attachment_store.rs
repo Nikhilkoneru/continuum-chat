@@ -1,6 +1,13 @@
+use std::collections::HashMap;
+
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::db::entities::{attachments, message_attachment_set_items, message_attachment_sets};
 use crate::db::{now_iso, Database};
 
 #[derive(Serialize, Clone)]
@@ -41,7 +48,7 @@ fn classify_kind(mime_type: &str) -> &str {
     }
 }
 
-pub fn save_attachment(
+pub async fn save_attachment(
     db: &Database,
     media_root: &std::path::Path,
     owner_id: &str,
@@ -62,16 +69,30 @@ pub fn save_attachment(
     let file_path = media_root.join(&file_name);
     std::fs::write(&file_path, bytes)?;
 
-    let conn = db.lock()?;
-    conn.execute(
-        "INSERT INTO attachments (id, github_user_id, thread_id, name, mime_type, size, kind, file_path, created_at, updated_at, uploaded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            id, owner_id, thread_id, original_name, mime_type,
-            bytes.len() as i64, kind, file_path.to_string_lossy().to_string(),
-            now, now, now
-        ],
-    )?;
+    let insert_result = attachments::ActiveModel {
+        id: Set(id.clone()),
+        github_user_id: Set(owner_id.to_string()),
+        thread_id: Set(thread_id.map(str::to_string)),
+        name: Set(original_name.to_string()),
+        mime_type: Set(mime_type.to_string()),
+        size: Set(bytes.len() as i64),
+        kind: Set(kind.to_string()),
+        file_path: Set(file_path.to_string_lossy().to_string()),
+        pdf_context_file_path: Set(None),
+        pdf_extraction: Set(None),
+        pdf_page_count: Set(None),
+        pdf_title: Set(None),
+        created_at: Set(now.clone()),
+        updated_at: Set(now.clone()),
+        uploaded_at: Set(now.clone()),
+    }
+    .insert(db.connection())
+    .await;
+
+    if let Err(error) = insert_result {
+        let _ = std::fs::remove_file(&file_path);
+        return Err(error.into());
+    }
 
     Ok(AttachmentSummary {
         id,
@@ -83,40 +104,50 @@ pub fn save_attachment(
     })
 }
 
-pub fn get_attachments_by_ids(
+pub async fn get_attachments_by_ids(
     db: &Database,
     owner_id: &str,
     thread_id: Option<&str>,
     attachment_ids: &[String],
-) -> Vec<AttachmentRecord> {
-    let Ok(conn) = db.lock() else {
-        return Vec::new();
-    };
+) -> anyhow::Result<Vec<AttachmentRecord>> {
+    if attachment_ids.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    attachment_ids
-        .iter()
-        .filter_map(|attachment_id| {
-            conn.query_row(
-                "SELECT name, mime_type, file_path
-                 FROM attachments
-                 WHERE id = ?1
-                   AND github_user_id = ?2
-                   AND (?3 IS NULL OR thread_id IS NULL OR thread_id = ?3)",
-                rusqlite::params![attachment_id, owner_id, thread_id],
-                |row| {
-                    Ok(AttachmentRecord {
-                        name: row.get(0)?,
-                        mime_type: row.get(1)?,
-                        file_path: row.get(2)?,
-                    })
+    let mut query = attachments::Entity::find()
+        .filter(attachments::Column::Id.is_in(attachment_ids.to_vec()))
+        .filter(attachments::Column::GithubUserId.eq(owner_id.to_string()));
+
+    if let Some(thread_id) = thread_id {
+        query = query.filter(
+            Condition::any()
+                .add(attachments::Column::ThreadId.is_null())
+                .add(attachments::Column::ThreadId.eq(thread_id.to_string())),
+        );
+    }
+
+    let records = query.all(db.connection()).await?;
+    let records_by_id = records
+        .into_iter()
+        .map(|attachment| {
+            (
+                attachment.id,
+                AttachmentRecord {
+                    name: attachment.name,
+                    mime_type: attachment.mime_type,
+                    file_path: attachment.file_path,
                 },
             )
-            .ok()
         })
-        .collect()
+        .collect::<HashMap<_, _>>();
+
+    Ok(attachment_ids
+        .iter()
+        .filter_map(|attachment_id| records_by_id.get(attachment_id).cloned())
+        .collect())
 }
 
-pub fn save_message_attachments(
+pub async fn save_message_attachments(
     db: &Database,
     thread_id: &str,
     user_message_index: usize,
@@ -126,77 +157,93 @@ pub fn save_message_attachments(
         return Ok(());
     }
 
-    let mut conn = db.lock()?;
-    let tx = conn.transaction()?;
-    tx.execute(
-        "DELETE FROM message_attachment_sets
-         WHERE thread_id = ?1 AND user_message_index = ?2",
-        rusqlite::params![thread_id, user_message_index as i64],
-    )?;
+    let txn = db.connection().begin().await?;
+    message_attachment_sets::Entity::delete_many()
+        .filter(message_attachment_sets::Column::ThreadId.eq(thread_id.to_string()))
+        .filter(message_attachment_sets::Column::UserMessageIndex.eq(user_message_index as i64))
+        .exec(&txn)
+        .await?;
 
     let set_id = Uuid::new_v4().to_string();
     let now = now_iso();
-    tx.execute(
-        "INSERT INTO message_attachment_sets (id, thread_id, user_message_index, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![set_id, thread_id, user_message_index as i64, now],
-    )?;
+    message_attachment_sets::ActiveModel {
+        id: Set(set_id.clone()),
+        thread_id: Set(thread_id.to_string()),
+        user_message_index: Set(user_message_index as i64),
+        created_at: Set(now),
+    }
+    .insert(&txn)
+    .await?;
 
     for (position, attachment_id) in attachment_ids.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO message_attachment_set_items (message_attachment_set_id, attachment_id, position)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![set_id, attachment_id, position as i64],
-        )?;
+        message_attachment_set_items::ActiveModel {
+            message_attachment_set_id: Set(set_id.clone()),
+            attachment_id: Set(attachment_id.clone()),
+            position: Set(position as i64),
+        }
+        .insert(&txn)
+        .await?;
     }
 
-    tx.commit()?;
+    txn.commit().await?;
     Ok(())
 }
 
-pub fn list_message_attachments(
+pub async fn list_message_attachments(
     db: &Database,
     thread_id: &str,
 ) -> anyhow::Result<Vec<MessageAttachmentSet>> {
-    let conn = db.lock()?;
-    let mut sets_stmt = conn.prepare(
-        "SELECT id, user_message_index
-         FROM message_attachment_sets
-         WHERE thread_id = ?1
-         ORDER BY user_message_index ASC, created_at ASC",
-    )?;
-    let set_rows = sets_stmt.query_map(rusqlite::params![thread_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
+    let sets = message_attachment_sets::Entity::find()
+        .filter(message_attachment_sets::Column::ThreadId.eq(thread_id.to_string()))
+        .order_by_asc(message_attachment_sets::Column::UserMessageIndex)
+        .order_by_asc(message_attachment_sets::Column::CreatedAt)
+        .all(db.connection())
+        .await?;
 
-    let mut sets = Vec::new();
-    for row in set_rows {
-        let (set_id, user_message_index) = row?;
-        let mut attachments_stmt = conn.prepare(
-            "SELECT a.id, a.name, a.mime_type, a.size, a.kind, a.uploaded_at
-             FROM message_attachment_set_items items
-             JOIN attachments a ON a.id = items.attachment_id
-             WHERE items.message_attachment_set_id = ?1
-             ORDER BY items.position ASC",
-        )?;
-        let attachments = attachments_stmt
-            .query_map(rusqlite::params![set_id], |attachment_row| {
-                Ok(AttachmentSummary {
-                    id: attachment_row.get(0)?,
-                    name: attachment_row.get(1)?,
-                    mime_type: attachment_row.get(2)?,
-                    size: attachment_row.get(3)?,
-                    kind: attachment_row.get(4)?,
-                    uploaded_at: attachment_row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+    let mut result = Vec::with_capacity(sets.len());
+    for set in sets {
+        let items = message_attachment_set_items::Entity::find()
+            .filter(
+                message_attachment_set_items::Column::MessageAttachmentSetId.eq(set.id.clone()),
+            )
+            .order_by_asc(message_attachment_set_items::Column::Position)
+            .all(db.connection())
+            .await?;
 
-        sets.push(MessageAttachmentSet {
-            user_message_index: user_message_index as usize,
-            attachments,
+        let attachment_ids = items
+            .iter()
+            .map(|item| item.attachment_id.clone())
+            .collect::<Vec<_>>();
+        let attachments = attachments::Entity::find()
+            .filter(attachments::Column::Id.is_in(attachment_ids.clone()))
+            .all(db.connection())
+            .await?;
+        let attachments_by_id = attachments
+            .into_iter()
+            .map(|attachment| {
+                let attachment_id = attachment.id.clone();
+                (
+                    attachment_id,
+                    AttachmentSummary {
+                        id: attachment.id,
+                        name: attachment.name,
+                        mime_type: attachment.mime_type,
+                        size: attachment.size,
+                        kind: attachment.kind,
+                        uploaded_at: attachment.uploaded_at,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        result.push(MessageAttachmentSet {
+            user_message_index: set.user_message_index as usize,
+            attachments: attachment_ids
+                .iter()
+                .filter_map(|attachment_id| attachments_by_id.get(attachment_id).cloned())
+                .collect(),
         });
     }
 
-    Ok(sets)
+    Ok(result)
 }

@@ -110,9 +110,10 @@ async fn list(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let threads =
-        thread_store::list_threads(&state.db, &session.user_id, query.project_id.as_deref());
+        thread_store::list_threads(&state.db, &session.user_id, query.project_id.as_deref())
+            .await?;
     Ok(Json(json!({ "threads": threads })))
 }
 
@@ -130,7 +131,7 @@ async fn create(
     headers: HeaderMap,
     Json(body): Json<Option<CreateThread>>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let body = body.unwrap_or(CreateThread {
         project_id: None,
         title: None,
@@ -146,6 +147,7 @@ async fn create(
         body.model.as_deref(),
         body.reasoning_effort.as_deref(),
     )
+    .await?
     .ok_or_else(|| AppError::NotFound("Project not found.".into()))?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -159,8 +161,9 @@ async fn get_detail(
     axum::extract::Path(thread_id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<ThreadDetailQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
     let messages = load_thread_messages(&state, &thread)
         .await
@@ -191,8 +194,9 @@ async fn get_messages(
     headers: HeaderMap,
     axum::extract::Path(thread_id): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     let Some(ref copilot_session_id) = thread.copilot_session_id else {
@@ -226,7 +230,7 @@ async fn list_acp_sessions(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<ListSessionsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
+    let _session = require_session(&headers, &state.db, &state.config).await?;
 
     let conn = state
         .copilot
@@ -274,7 +278,7 @@ async fn update(
     axum::extract::Path(thread_id): axum::extract::Path<String>,
     Json(body): Json<UpdateThread>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::update_thread(
         &state.db,
         &session.user_id,
@@ -283,6 +287,7 @@ async fn update(
         body.model.as_deref(),
         body.reasoning_effort.as_ref().map(|o| o.as_deref()),
     )
+    .await?
     .ok_or_else(|| AppError::NotFound("Thread or project not found.".into()))?;
     Ok(Json(json!({ "thread": thread })))
 }
@@ -313,12 +318,12 @@ async fn load_thread_messages(
                 copilot_session_id,
                 thread.id
             );
-            thread_store::clear_thread_session(&state.db, &thread.id);
+            thread_store::clear_thread_session(&state.db, &thread.id).await?;
             return Ok(Vec::new());
         }
         Err(error) => return Err(error),
     };
-    let attachment_sets = attachment_store::list_message_attachments(&state.db, &thread.id)?;
+    let attachment_sets = attachment_store::list_message_attachments(&state.db, &thread.id).await?;
 
     Ok(replayed_messages_to_chat_messages(
         &replayed_messages,

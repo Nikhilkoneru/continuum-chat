@@ -303,7 +303,7 @@ fn init_tracing(config: &Config) -> anyhow::Result<tracing_appender::non_blockin
 }
 
 async fn serve(config: Config, started_at: String) -> anyhow::Result<()> {
-    let database = Database::open(&config)?;
+    let database = Database::open(&config).await?;
     let state = AppState::new(config.clone(), database, started_at);
 
     let cors = CorsLayer::new()

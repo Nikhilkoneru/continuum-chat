@@ -3,6 +3,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::auth_middleware::{check_service_access, extract_bearer_token, get_session};
@@ -18,6 +19,12 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/github/device/start", post(device_start))
         .route("/api/auth/github/device/:flow_id", get(device_poll))
+}
+
+fn json_response<T: Serialize>(value: T) -> Result<Json<serde_json::Value>, AppError> {
+    Ok(Json(
+        serde_json::to_value(value).map_err(|error| AppError::Internal(error.to_string()))?,
+    ))
 }
 
 async fn capabilities(
@@ -80,8 +87,11 @@ async fn get_current_session(
         ));
     }
 
-    let session =
-        extract_bearer_token(&headers).and_then(|t| get_session(&state.db, &state.config, &t));
+    let session = if let Some(token) = extract_bearer_token(&headers) {
+        get_session(&state.db, &state.config, &token).await?
+    } else {
+        None
+    };
 
     match session {
         Some(s) => Ok(Json(json!({
@@ -117,7 +127,7 @@ async fn create_local_session(
 
     // Return existing session if valid
     if let Some(token) = extract_bearer_token(&headers) {
-        if let Some(s) = get_session(&state.db, &state.config, &token) {
+        if let Some(s) = get_session(&state.db, &state.config, &token).await? {
             return Ok((
                 axum::http::StatusCode::CREATED,
                 Json(json!({
@@ -135,7 +145,7 @@ async fn create_local_session(
         }
     }
 
-    let session = auth_store::create_local_session(&state.db, &state.config);
+    let session = auth_store::create_local_session(&state.db, &state.config).await?;
     Ok((
         axum::http::StatusCode::CREATED,
         Json(json!({ "session": session })),
@@ -153,7 +163,7 @@ async fn logout(
     }
 
     if let Some(token) = extract_bearer_token(&headers) {
-        auth_store::destroy_session(&state.db, &token);
+        auth_store::destroy_session(&state.db, &token).await?;
     }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -231,11 +241,12 @@ async fn device_start(
         body.verification_uri_complete.as_deref(),
         body.expires_in,
         body.interval,
-    );
+    )
+    .await?;
 
     Ok((
         axum::http::StatusCode::CREATED,
-        Json(serde_json::to_value(device_auth).unwrap()),
+        json_response(device_auth)?,
     ))
 }
 
@@ -260,7 +271,7 @@ async fn device_poll(
         .as_ref()
         .ok_or_else(|| AppError::BadGateway("GITHUB_CLIENT_ID not configured.".into()))?;
 
-    let record = auth_store::get_device_auth(&state.db, &flow_id);
+    let record = auth_store::get_device_auth(&state.db, &flow_id).await?;
     let record = match record {
         Some(r) => r,
         None => {
@@ -273,21 +284,21 @@ async fn device_poll(
 
     // Check if already complete
     if let Some(payload) =
-        auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id)
+        auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id).await?
     {
         if !matches!(&payload, auth_store::DeviceAuthPoll::Pending(_)) {
-            return Ok(Json(serde_json::to_value(payload).unwrap()));
+            return json_response(payload);
         }
     }
 
     // Check rate limit
-    if chrono::Utc::now()
-        < chrono::DateTime::parse_from_rfc3339(&record.next_poll_at).unwrap_or_default()
-    {
+    let next_poll_at = chrono::DateTime::parse_from_rfc3339(&record.next_poll_at)
+        .map_err(|error| AppError::Internal(format!("Invalid device auth poll timestamp: {error}")))?;
+    if chrono::Utc::now() < next_poll_at {
         if let Some(payload) =
-            auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id)
+            auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id).await?
         {
-            return Ok(Json(serde_json::to_value(payload).unwrap()));
+            return json_response(payload);
         }
     }
 
@@ -324,8 +335,9 @@ async fn device_poll(
             &state.config,
             &access_token,
             Some((&profile.0, Some(&profile.1), profile.2.as_deref())),
-        );
-        auth_store::complete_device_auth(&state.db, &flow_id, &session.session_token);
+        )
+        .await?;
+        auth_store::complete_device_auth(&state.db, &flow_id, &session.session_token).await?;
         return Ok(Json(json!({
             "status": "complete",
             "session": session
@@ -334,10 +346,11 @@ async fn device_poll(
 
     match body.error.as_deref() {
         Some("authorization_pending") => {
-            auth_store::schedule_device_poll(&state.db, &flow_id, None);
+            auth_store::schedule_device_poll(&state.db, &flow_id, None).await?;
         }
         Some("slow_down") => {
-            auth_store::schedule_device_poll(&state.db, &flow_id, Some(record.interval + 5));
+            auth_store::schedule_device_poll(&state.db, &flow_id, Some(record.interval + 5))
+                .await?;
         }
         Some("access_denied") => {
             auth_store::fail_device_auth(
@@ -345,7 +358,8 @@ async fn device_poll(
                 &flow_id,
                 "denied",
                 "GitHub device authorization was denied.",
-            );
+            )
+            .await?;
         }
         Some("expired_token") => {
             auth_store::fail_device_auth(
@@ -353,7 +367,8 @@ async fn device_poll(
                 &flow_id,
                 "expired",
                 "GitHub device code expired. Start sign-in again.",
-            );
+            )
+            .await?;
         }
         _ => {
             let desc = body
@@ -363,8 +378,8 @@ async fn device_poll(
         }
     }
 
-    match auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id) {
-        Some(payload) => Ok(Json(serde_json::to_value(payload).unwrap())),
+    match auth_store::get_device_auth_poll_payload(&state.db, &state.config, &flow_id).await? {
+        Some(payload) => json_response(payload),
         None => Ok(Json(
             json!({ "status": "expired", "error": "Flow not found." }),
         )),

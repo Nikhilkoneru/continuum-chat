@@ -20,8 +20,8 @@ async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
-    let projects = project_store::list_projects(&state.db, &session.user_id);
+    let session = require_session(&headers, &state.db, &state.config).await?;
+    let projects = project_store::list_projects(&state.db, &session.user_id).await?;
     Ok(Json(json!({ "projects": projects })))
 }
 
@@ -37,13 +37,13 @@ async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateProject>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let name = body.name.trim();
     if name.len() < 2 || name.len() > 80 {
         return Err(AppError::BadRequest("Name must be 2-80 characters.".into()));
     }
     let desc = body.description.as_deref().unwrap_or("").trim();
-    let project = project_store::create_project(&state.db, &session.user_id, name, desc);
+    let project = project_store::create_project(&state.db, &session.user_id, name, desc).await?;
     Ok((
         axum::http::StatusCode::CREATED,
         Json(json!({ "project": project })),
@@ -55,8 +55,9 @@ async fn get_one(
     headers: HeaderMap,
     axum::extract::Path(project_id): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let project = project_store::get_project(&state.db, &session.user_id, &project_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Project not found.".into()))?;
     Ok(Json(json!({ "project": project })))
 }

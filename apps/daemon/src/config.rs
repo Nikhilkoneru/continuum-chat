@@ -355,6 +355,36 @@ fn dirs_home() -> PathBuf {
 }
 
 #[cfg(test)]
+pub(crate) fn test_config(root: &Path) -> Config {
+    let app_support_dir = root.join("continuum-chat");
+    Config {
+        host: "127.0.0.1".to_string(),
+        port: 4000,
+        client_origin: "*".to_string(),
+        public_api_url: None,
+        tailscale_api_url: None,
+        remote_access_mode: "local".to_string(),
+        app_auth_mode: "local".to_string(),
+        daemon_owner_id: "daemon-owner".to_string(),
+        daemon_owner_login: "daemon".to_string(),
+        daemon_owner_name: "Daemon owner".to_string(),
+        copilot_use_logged_in_user: true,
+        copilot_github_token: None,
+        default_model: "gpt-5-mini".to_string(),
+        github_client_id: None,
+        github_client_secret: None,
+        github_callback_url: None,
+        config_file_path: app_support_dir.join("config").join("daemon.env"),
+        database_path: app_support_dir.join("data").join("assistant.sqlite"),
+        media_root: app_support_dir.join("media"),
+        log_file_path: app_support_dir.join("logs").join("daemon.log"),
+        app_support_dir,
+        service_access_token: Some("service-token".to_string()),
+        copilot_bin: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

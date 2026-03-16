@@ -24,8 +24,8 @@ async fn get_preferences(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
-    let prefs = preferences_store::get_preferences(&state.db);
+    let _session = require_session(&headers, &state.db, &state.config).await?;
+    let prefs = preferences_store::get_preferences(&state.db).await?;
     Ok(Json(json!({ "preferences": prefs })))
 }
 
@@ -40,12 +40,12 @@ async fn set_preferences(
     headers: HeaderMap,
     Json(body): Json<SetPreferences>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
+    let _session = require_session(&headers, &state.db, &state.config).await?;
     let mode = match body.approval_mode.as_str() {
         "safer-defaults" => "safer-defaults",
         _ => "approve-all",
     };
-    let prefs = preferences_store::set_approval_mode(&state.db, mode);
+    let prefs = preferences_store::set_approval_mode(&state.db, mode).await?;
     Ok(Json(json!({ "preferences": prefs })))
 }
 
@@ -53,7 +53,7 @@ async fn get_status(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
+    let _session = require_session(&headers, &state.db, &state.config).await?;
 
     // Basic status response — ACP connection status
     let connected = match state.copilot.get_or_create_connection().await {
@@ -80,7 +80,7 @@ async fn delete_session(
     headers: HeaderMap,
     axum::extract::Path(_session_id): axum::extract::Path<String>,
 ) -> Result<axum::http::StatusCode, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
+    let _session = require_session(&headers, &state.db, &state.config).await?;
     // ACP doesn't have session deletion — sessions are managed by the agent
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

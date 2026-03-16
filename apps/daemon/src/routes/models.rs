@@ -16,7 +16,7 @@ async fn list_models(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let _session = require_session(&headers, &state.db, &state.config)?;
+    let _session = require_session(&headers, &state.db, &state.config).await?;
 
     // Try to get models from ACP connection
     if let Ok(conn) = state.copilot.get_or_create_connection().await {

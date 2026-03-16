@@ -62,8 +62,9 @@ async fn abort_chat(
     headers: HeaderMap,
     Json(body): Json<AbortInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &body.thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     if let Some(ref sid) = thread.copilot_session_id {
@@ -80,8 +81,9 @@ async fn user_input(
     headers: HeaderMap,
     Json(body): Json<UserInputInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &body.thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
     let session_id = thread.copilot_session_id.ok_or_else(|| {
         AppError::BadRequest("This thread does not have an active Copilot session.".into())
@@ -117,8 +119,9 @@ async fn permission_response(
     headers: HeaderMap,
     Json(body): Json<PermissionInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &body.thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
     let session_id = thread.copilot_session_id.ok_or_else(|| {
         AppError::BadRequest("This thread does not have an active Copilot session.".into())
@@ -158,8 +161,9 @@ async fn stream_chat(
     headers: HeaderMap,
     Json(body): Json<ChatStreamInput>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let thread = thread_store::get_thread(&state.db, &session.user_id, &body.thread_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     let prompt = body.prompt.trim().to_string();
@@ -175,7 +179,8 @@ async fn stream_chat(
         &session.user_id,
         Some(&thread.id),
         &attachment_ids,
-    );
+    )
+    .await?;
     if attachments.len() != attachment_ids.len() {
         return Err(AppError::BadRequest(
             "One or more attachments could not be loaded for this thread.".into(),
@@ -193,7 +198,7 @@ async fn stream_chat(
     } else {
         prompt.clone()
     };
-    thread_store::rename_thread_if_placeholder(&state.db, &thread.id, &title_preview);
+    thread_store::rename_thread_if_placeholder(&state.db, &thread.id, &title_preview).await?;
     thread_store::update_thread(
         &state.db,
         &session.user_id,
@@ -201,8 +206,9 @@ async fn stream_chat(
         None,
         Some(&model),
         reasoning_effort.as_ref().map(|r| Some(r.as_str())),
-    );
-    thread_store::update_thread_preview(&state.db, &thread.id, &prompt);
+    )
+    .await?;
+    thread_store::update_thread_preview(&state.db, &thread.id, &prompt).await?;
 
     let prompt_content = build_prompt_content(&prompt, &attachments)?;
 
@@ -235,7 +241,7 @@ async fn stream_chat(
             } else {
                 match conn.new_session().await {
                     Ok(id) => {
-                        thread_store::update_thread_session(&state_clone.db, &thread_id, &id);
+                        let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
                         let _ = tx
                             .send(Ok(make_event(
                                 &json!({ "type": "session", "sessionId": id }),
@@ -255,7 +261,7 @@ async fn stream_chat(
         } else {
             match conn.new_session().await {
                 Ok(id) => {
-                    thread_store::update_thread_session(&state_clone.db, &thread_id, &id);
+                    let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
                     let _ = tx
                         .send(Ok(make_event(
                             &json!({ "type": "session", "sessionId": id }),
@@ -294,7 +300,9 @@ async fn stream_chat(
                         &thread_id,
                         user_message_index,
                         &attachment_ids,
-                    ) {
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             "Failed to persist attachment mapping for thread {}: {}",
                             thread_id,
@@ -378,7 +386,9 @@ async fn stream_chat(
         }
 
         if !streamed_content.is_empty() {
-            thread_store::update_thread_preview(&state_clone.db, &thread_id, &streamed_content);
+            let _ =
+                thread_store::update_thread_preview(&state_clone.db, &thread_id, &streamed_content)
+                    .await;
         }
     });
 
@@ -615,10 +625,19 @@ async fn process_server_request_notification(
         | "_server_request/session/request_permission"
         | "_server_request/session/request" => {
             if let Some(request) = conn.get_pending_permission(request_id).await {
-                if let Some((option_id, decision, reason)) = auto_decide_permission(
-                    &request,
-                    &preferences_store::get_preferences(&state.db).approval_mode,
-                ) {
+                let approval_mode = match preferences_store::get_preferences(&state.db).await {
+                    Ok(prefs) => prefs.approval_mode,
+                    Err(error) => {
+                        let _ = tx.send(Ok(make_event(&json!({
+                            "type": "error",
+                            "message": format!("Failed to load approval preferences: {error}")
+                        })))).await;
+                        return;
+                    }
+                };
+                if let Some((option_id, decision, reason)) =
+                    auto_decide_permission(&request, &approval_mode)
+                {
                     match conn
                         .respond_to_permission_request(request_id, &option_id)
                         .await

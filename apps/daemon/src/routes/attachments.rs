@@ -34,7 +34,7 @@ async fn upload(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
-    let session = require_session(&headers, &state.db, &state.config)?;
+    let session = require_session(&headers, &state.db, &state.config).await?;
     let mut upload = UploadEnvelope::default();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -86,7 +86,7 @@ async fn upload(
         &mime,
         &bytes,
     )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
 
     Ok((
         axum::http::StatusCode::CREATED,

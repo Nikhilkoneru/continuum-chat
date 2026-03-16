@@ -1,6 +1,8 @@
 use axum::http::HeaderMap;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::config::Config;
+use crate::db::entities::{app_sessions, users};
 use crate::db::Database;
 
 pub struct AuthSession {
@@ -34,30 +36,38 @@ pub fn check_service_access(headers: &HeaderMap, config: &Config) -> bool {
     provided == required
 }
 
-pub fn get_session(db: &Database, config: &Config, token: &str) -> Option<AuthSession> {
-    let conn = db.lock().ok()?;
+pub async fn get_session(
+    db: &Database,
+    config: &Config,
+    token: &str,
+) -> anyhow::Result<Option<AuthSession>> {
     let now = crate::db::now_iso();
-    let mut stmt = conn
-        .prepare(
-            "SELECT s.session_token, s.github_access_token, u.github_user_id, u.login, u.name, u.avatar_url
-             FROM app_sessions s
-             JOIN users u ON u.github_user_id = s.github_user_id
-             WHERE s.session_token = ?1 AND s.expires_at >= ?2 AND s.auth_mode = ?3",
-        )
-        .ok()?;
-    stmt.query_row(rusqlite::params![token, now, config.app_auth_mode], |row| {
-        Ok(AuthSession {
-            session_token: row.get(0)?,
-            user_id: row.get(2)?,
-            login: row.get(3)?,
-            name: row.get(4)?,
-            avatar_url: row.get(5)?,
-        })
-    })
-    .ok()
+    let Some(session) = app_sessions::Entity::find_by_id(token.to_string())
+        .filter(app_sessions::Column::ExpiresAt.gte(now))
+        .filter(app_sessions::Column::AuthMode.eq(config.app_auth_mode.clone()))
+        .one(db.connection())
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    let Some(user) = users::Entity::find_by_id(session.github_user_id.clone())
+        .one(db.connection())
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(AuthSession {
+        session_token: session.session_token,
+        user_id: user.github_user_id,
+        login: user.login,
+        name: user.name,
+        avatar_url: user.avatar_url,
+    }))
 }
 
-pub fn require_session(
+pub async fn require_session(
     headers: &HeaderMap,
     db: &Database,
     config: &Config,
@@ -77,7 +87,57 @@ pub fn require_session(
             crate::error::AppError::Unauthorized("You must sign in to use this product.".into())
         }
     })?;
-    get_session(db, config, &token).ok_or_else(|| {
+    get_session(db, config, &token).await?.ok_or_else(|| {
         crate::error::AppError::Unauthorized("Your session expired. Please sign in again.".into())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderValue;
+
+    use super::*;
+
+    #[test]
+    fn extracts_bearer_and_session_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer abc123"));
+        assert_eq!(extract_bearer_token(&headers).as_deref(), Some("abc123"));
+
+        headers.remove("authorization");
+        headers.insert("x-session-token", HeaderValue::from_static("fallback-token"));
+        assert_eq!(
+            extract_bearer_token(&headers).as_deref(),
+            Some("fallback-token")
+        );
+    }
+
+    #[test]
+    fn validates_service_access_token() {
+        let config = crate::config::test_config(std::path::Path::new("/tmp"));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-service-access-token", HeaderValue::from_static("service-token"));
+        assert!(check_service_access(&headers, &config));
+
+        headers.insert("x-service-access-token", HeaderValue::from_static("wrong"));
+        assert!(!check_service_access(&headers, &config));
+    }
+
+    #[tokio::test]
+    async fn loads_created_local_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::config::test_config(temp.path());
+        let db = crate::db::Database::open(&config).await.unwrap();
+
+        let session = crate::store::auth_store::create_local_session(&db, &config)
+            .await
+            .unwrap();
+        let loaded = get_session(&db, &config, &session.session_token)
+            .await
+            .unwrap()
+            .expect("session should load");
+
+        assert_eq!(loaded.user_id, config.daemon_owner_id);
+        assert_eq!(loaded.login, config.daemon_owner_login);
+    }
 }

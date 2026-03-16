@@ -1,6 +1,8 @@
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::db::entities::projects;
 use crate::db::{now_iso, Database};
 
 #[derive(Serialize, Clone)]
@@ -12,62 +14,66 @@ pub struct ProjectSummary {
     pub updated_at: String,
 }
 
-pub fn create_project(
+pub async fn create_project(
     db: &Database,
     owner_id: &str,
     name: &str,
     description: &str,
-) -> ProjectSummary {
+) -> anyhow::Result<ProjectSummary> {
     let id = Uuid::new_v4().to_string();
     let now = now_iso();
-    if let Ok(conn) = db.lock() {
-        let _ = conn.execute(
-            "INSERT INTO projects (id, github_user_id, name, description, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, owner_id, name, description, now, now],
-        );
+
+    projects::ActiveModel {
+        id: Set(id.clone()),
+        github_user_id: Set(owner_id.to_string()),
+        name: Set(name.to_string()),
+        description: Set(description.to_string()),
+        created_at: Set(now.clone()),
+        updated_at: Set(now.clone()),
     }
-    ProjectSummary {
+    .insert(db.connection())
+    .await?;
+
+    Ok(ProjectSummary {
         id,
         name: name.to_string(),
         description: description.to_string(),
         updated_at: now,
-    }
-}
-
-pub fn list_projects(db: &Database, owner_id: &str) -> Vec<ProjectSummary> {
-    let Ok(conn) = db.lock() else {
-        return Vec::new();
-    };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name, description, updated_at FROM projects WHERE github_user_id = ?1 ORDER BY updated_at DESC",
-    ) else {
-        return Vec::new();
-    };
-    stmt.query_map([owner_id], |row| {
-        Ok(ProjectSummary {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            description: row.get(2)?,
-            updated_at: row.get(3)?,
-        })
     })
-    .map(|rows| rows.filter_map(|row| row.ok()).collect())
-    .unwrap_or_default()
 }
 
-pub fn get_project(db: &Database, owner_id: &str, project_id: &str) -> Option<ProjectSummary> {
-    let conn = db.lock().ok()?;
-    conn.query_row(
-        "SELECT id, name, description, updated_at FROM projects WHERE github_user_id = ?1 AND id = ?2",
-        rusqlite::params![owner_id, project_id],
-        |row| {
-            Ok(ProjectSummary {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                updated_at: row.get(3)?,
-            })
-        },
-    )
-    .ok()
+pub async fn list_projects(db: &Database, owner_id: &str) -> anyhow::Result<Vec<ProjectSummary>> {
+    let projects = projects::Entity::find()
+        .filter(projects::Column::GithubUserId.eq(owner_id.to_string()))
+        .order_by_desc(projects::Column::UpdatedAt)
+        .all(db.connection())
+        .await?;
+
+    Ok(projects
+        .into_iter()
+        .map(|project| ProjectSummary {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            updated_at: project.updated_at,
+        })
+        .collect())
+}
+
+pub async fn get_project(
+    db: &Database,
+    owner_id: &str,
+    project_id: &str,
+) -> anyhow::Result<Option<ProjectSummary>> {
+    let project = projects::Entity::find_by_id(project_id.to_string())
+        .filter(projects::Column::GithubUserId.eq(owner_id.to_string()))
+        .one(db.connection())
+        .await?;
+
+    Ok(project.map(|project| ProjectSummary {
+        id: project.id,
+        name: project.name,
+        description: project.description,
+        updated_at: project.updated_at,
+    }))
 }

@@ -1,7 +1,12 @@
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::config::Config;
+use crate::db::entities::{app_sessions, device_auth_flows, oauth_states, users};
 use crate::db::{now_iso, Database};
 
 const SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -64,87 +69,128 @@ pub struct DeviceAuthPollPending {
     pub interval: i64,
 }
 
-pub fn prune(db: &Database) {
-    let conn = db.conn.lock().unwrap();
+pub async fn prune(db: &Database) -> anyhow::Result<()> {
     let now = now_iso();
-    let _ = conn.execute("DELETE FROM oauth_states WHERE expires_at < ?1", [&now]);
-    let _ = conn.execute("DELETE FROM app_sessions WHERE expires_at < ?1", [&now]);
-    let _ = conn.execute(
-        "UPDATE device_auth_flows SET status = 'expired', error = 'GitHub device code expired. Start sign-in again.' WHERE status = 'pending' AND expires_at < ?1",
-        [&now],
-    );
-    let cutoff = chrono::Utc::now() - chrono::Duration::milliseconds(DEVICE_AUTH_TTL_MS);
-    let _ = conn.execute(
-        "DELETE FROM device_auth_flows WHERE created_at < ?1",
-        [cutoff.to_rfc3339()],
-    );
+    oauth_states::Entity::delete_many()
+        .filter(oauth_states::Column::ExpiresAt.lt(now.clone()))
+        .exec(db.connection())
+        .await?;
+    app_sessions::Entity::delete_many()
+        .filter(app_sessions::Column::ExpiresAt.lt(now.clone()))
+        .exec(db.connection())
+        .await?;
+    let expired_flows = device_auth_flows::Entity::find()
+        .filter(device_auth_flows::Column::Status.eq("pending"))
+        .filter(device_auth_flows::Column::ExpiresAt.lt(now))
+        .all(db.connection())
+        .await?;
+    for flow in expired_flows {
+        let mut active = flow.into_active_model();
+        active.status = Set("expired".to_string());
+        active.error = Set(Some(
+            "GitHub device code expired. Start sign-in again.".to_string(),
+        ));
+        active.update(db.connection()).await?;
+    }
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::milliseconds(DEVICE_AUTH_TTL_MS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    device_auth_flows::Entity::delete_many()
+        .filter(device_auth_flows::Column::CreatedAt.lt(cutoff))
+        .exec(db.connection())
+        .await?;
+
+    Ok(())
 }
 
-fn find_existing_owner_id(db: &Database, config: &Config) -> String {
-    let conn = db.conn.lock().unwrap();
-    let result: Result<String, _> = conn.query_row(
-        "SELECT github_user_id FROM users ORDER BY updated_at DESC, created_at DESC LIMIT 1",
-        [],
-        |row| row.get(0),
-    );
-    result.unwrap_or_else(|_| config.daemon_owner_id.clone())
+async fn find_existing_owner_id(db: &Database, config: &Config) -> anyhow::Result<String> {
+    let existing = users::Entity::find()
+        .order_by_desc(users::Column::UpdatedAt)
+        .order_by_desc(users::Column::CreatedAt)
+        .one(db.connection())
+        .await?;
+
+    Ok(existing
+        .map(|user| user.github_user_id)
+        .unwrap_or_else(|| config.daemon_owner_id.clone()))
 }
 
-pub fn create_app_session(
+pub async fn create_app_session(
     db: &Database,
     config: &Config,
     github_access_token: &str,
     profile: Option<(&str, Option<&str>, Option<&str>)>,
-) -> UserSession {
-    prune(db);
+) -> anyhow::Result<UserSession> {
+    prune(db).await?;
+
     let now = now_iso();
     let session_token = Uuid::new_v4().to_string();
-    let owner_id = find_existing_owner_id(db, config);
+    let owner_id = find_existing_owner_id(db, config).await?;
     let (login, name, avatar_url) = profile.unwrap_or((
         &config.daemon_owner_login,
         Some(config.daemon_owner_name.as_str()),
         None,
     ));
 
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT INTO users (github_user_id, login, name, avatar_url, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(github_user_id) DO UPDATE SET login = excluded.login, name = excluded.name, avatar_url = excluded.avatar_url, updated_at = excluded.updated_at",
-        rusqlite::params![owner_id, login, name, avatar_url, now, now],
-    )
-    .unwrap();
+    let txn = db.connection().begin().await?;
+    if let Some(existing) = users::Entity::find_by_id(owner_id.clone()).one(&txn).await? {
+        let mut active = existing.into_active_model();
+        active.login = Set(login.to_string());
+        active.name = Set(name.map(str::to_string));
+        active.avatar_url = Set(avatar_url.map(str::to_string));
+        active.updated_at = Set(now.clone());
+        active.update(&txn).await?;
+    } else {
+        users::ActiveModel {
+            github_user_id: Set(owner_id.clone()),
+            login: Set(login.to_string()),
+            name: Set(name.map(str::to_string)),
+            avatar_url: Set(avatar_url.map(str::to_string)),
+            created_at: Set(now.clone()),
+            updated_at: Set(now.clone()),
+        }
+        .insert(&txn)
+        .await?;
+    }
 
     let expires_at = (chrono::Utc::now() + chrono::Duration::milliseconds(SESSION_TTL_MS))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    conn.execute(
-        "INSERT INTO app_sessions (session_token, github_user_id, github_access_token, auth_mode, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![session_token, owner_id, github_access_token, config.app_auth_mode, now, expires_at],
-    )
-    .unwrap();
+    app_sessions::ActiveModel {
+        session_token: Set(session_token.clone()),
+        github_user_id: Set(owner_id.clone()),
+        github_access_token: Set(github_access_token.to_string()),
+        auth_mode: Set(config.app_auth_mode.clone()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+    }
+    .insert(&txn)
+    .await?;
 
-    UserSession {
+    txn.commit().await?;
+
+    Ok(UserSession {
         session_token,
         user: AppSessionUser {
             id: owner_id,
             login: login.to_string(),
-            name: name.map(|s| s.to_string()),
-            avatar_url: avatar_url.map(|s| s.to_string()),
+            name: name.map(str::to_string),
+            avatar_url: avatar_url.map(str::to_string),
         },
-    }
+    })
 }
 
-pub fn create_local_session(db: &Database, config: &Config) -> UserSession {
-    create_app_session(db, config, "", None)
+pub async fn create_local_session(db: &Database, config: &Config) -> anyhow::Result<UserSession> {
+    create_app_session(db, config, "", None).await
 }
 
-pub fn destroy_session(db: &Database, token: &str) {
-    let conn = db.conn.lock().unwrap();
-    let _ = conn.execute("DELETE FROM app_sessions WHERE session_token = ?1", [token]);
+pub async fn destroy_session(db: &Database, token: &str) -> anyhow::Result<()> {
+    app_sessions::Entity::delete_by_id(token.to_string())
+        .exec(db.connection())
+        .await?;
+    Ok(())
 }
 
-pub fn create_device_auth(
+pub async fn create_device_auth(
     db: &Database,
     device_code: &str,
     user_code: &str,
@@ -152,8 +198,9 @@ pub fn create_device_auth(
     verification_uri_complete: Option<&str>,
     expires_in: i64,
     interval: i64,
-) -> DeviceAuthStart {
-    prune(db);
+) -> anyhow::Result<DeviceAuthStart> {
+    prune(db).await?;
+
     let flow_id = Uuid::new_v4().to_string();
     let now = now_iso();
     let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(expires_in))
@@ -161,22 +208,31 @@ pub fn create_device_auth(
     let next_poll_at = (chrono::Utc::now() + chrono::Duration::seconds(interval))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
-    let conn = db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT INTO device_auth_flows (flow_id, device_code, user_code, verification_uri, verification_uri_complete, expires_at, interval_seconds, next_poll_at, status, session_token, error, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', NULL, NULL, ?9)",
-        rusqlite::params![flow_id, device_code, user_code, verification_uri, verification_uri_complete, expires_at, interval, next_poll_at, now],
-    )
-    .unwrap();
+    device_auth_flows::ActiveModel {
+        flow_id: Set(flow_id.clone()),
+        device_code: Set(device_code.to_string()),
+        user_code: Set(user_code.to_string()),
+        verification_uri: Set(verification_uri.to_string()),
+        verification_uri_complete: Set(verification_uri_complete.map(str::to_string)),
+        expires_at: Set(expires_at.clone()),
+        interval_seconds: Set(interval),
+        next_poll_at: Set(next_poll_at),
+        status: Set("pending".to_string()),
+        session_token: Set(None),
+        error: Set(None),
+        created_at: Set(now),
+    }
+    .insert(db.connection())
+    .await?;
 
-    DeviceAuthStart {
+    Ok(DeviceAuthStart {
         flow_id,
         user_code: user_code.to_string(),
         verification_uri: verification_uri.to_string(),
-        verification_uri_complete: verification_uri_complete.map(|s| s.to_string()),
+        verification_uri_complete: verification_uri_complete.map(str::to_string),
         expires_at,
         interval,
-    }
+    })
 }
 
 pub struct DeviceAuthRecord {
@@ -193,86 +249,121 @@ pub struct DeviceAuthRecord {
     pub error: Option<String>,
 }
 
-pub fn get_device_auth(db: &Database, flow_id: &str) -> Option<DeviceAuthRecord> {
-    prune(db);
-    let conn = db.conn.lock().unwrap();
-    conn.query_row(
-        "SELECT flow_id, device_code, user_code, verification_uri, verification_uri_complete, expires_at, interval_seconds, next_poll_at, status, session_token, error
-         FROM device_auth_flows WHERE flow_id = ?1",
-        [flow_id],
-        |row| {
-            Ok(DeviceAuthRecord {
-                flow_id: row.get(0)?,
-                device_code: row.get(1)?,
-                user_code: row.get(2)?,
-                verification_uri: row.get(3)?,
-                verification_uri_complete: row.get(4)?,
-                expires_at: row.get(5)?,
-                interval: row.get(6)?,
-                next_poll_at: row.get(7)?,
-                status: row.get(8)?,
-                session_token: row.get(9)?,
-                error: row.get(10)?,
-            })
-        },
-    )
-    .ok()
+pub async fn get_device_auth(
+    db: &Database,
+    flow_id: &str,
+) -> anyhow::Result<Option<DeviceAuthRecord>> {
+    prune(db).await?;
+
+    let record = device_auth_flows::Entity::find_by_id(flow_id.to_string())
+        .one(db.connection())
+        .await?;
+
+    Ok(record.map(|record| DeviceAuthRecord {
+        flow_id: record.flow_id,
+        device_code: record.device_code,
+        user_code: record.user_code,
+        verification_uri: record.verification_uri,
+        verification_uri_complete: record.verification_uri_complete,
+        expires_at: record.expires_at,
+        interval: record.interval_seconds,
+        next_poll_at: record.next_poll_at,
+        status: record.status,
+        session_token: record.session_token,
+        error: record.error,
+    }))
 }
 
-pub fn schedule_device_poll(db: &Database, flow_id: &str, interval: Option<i64>) {
-    let conn = db.conn.lock().unwrap();
+pub async fn schedule_device_poll(
+    db: &Database,
+    flow_id: &str,
+    interval: Option<i64>,
+) -> anyhow::Result<()> {
     let actual_interval = interval.unwrap_or(5);
     let next_poll_at = (chrono::Utc::now() + chrono::Duration::seconds(actual_interval))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let _ = conn.execute(
-        "UPDATE device_auth_flows SET interval_seconds = ?1, next_poll_at = ?2 WHERE flow_id = ?3 AND status = 'pending'",
-        rusqlite::params![actual_interval, next_poll_at, flow_id],
-    );
+
+    if let Some(record) = device_auth_flows::Entity::find_by_id(flow_id.to_string())
+        .one(db.connection())
+        .await?
+    {
+        let mut active = record.into_active_model();
+        active.interval_seconds = Set(actual_interval);
+        active.next_poll_at = Set(next_poll_at);
+        active.update(db.connection()).await?;
+    }
+
+    Ok(())
 }
 
-pub fn complete_device_auth(db: &Database, flow_id: &str, session_token: &str) {
-    let conn = db.conn.lock().unwrap();
-    let _ = conn.execute(
-        "UPDATE device_auth_flows SET status = 'complete', session_token = ?1, error = NULL WHERE flow_id = ?2",
-        rusqlite::params![session_token, flow_id],
-    );
+pub async fn complete_device_auth(
+    db: &Database,
+    flow_id: &str,
+    session_token: &str,
+) -> anyhow::Result<()> {
+    if let Some(record) = device_auth_flows::Entity::find_by_id(flow_id.to_string())
+        .one(db.connection())
+        .await?
+    {
+        let mut active = record.into_active_model();
+        active.status = Set("complete".to_string());
+        active.session_token = Set(Some(session_token.to_string()));
+        active.error = Set(None);
+        active.update(db.connection()).await?;
+    }
+
+    Ok(())
 }
 
-pub fn fail_device_auth(db: &Database, flow_id: &str, status: &str, error: &str) {
-    let conn = db.conn.lock().unwrap();
-    let _ = conn.execute(
-        "UPDATE device_auth_flows SET status = ?1, error = ?2 WHERE flow_id = ?3",
-        rusqlite::params![status, error, flow_id],
-    );
+pub async fn fail_device_auth(
+    db: &Database,
+    flow_id: &str,
+    status: &str,
+    error: &str,
+) -> anyhow::Result<()> {
+    if let Some(record) = device_auth_flows::Entity::find_by_id(flow_id.to_string())
+        .one(db.connection())
+        .await?
+    {
+        let mut active = record.into_active_model();
+        active.status = Set(status.to_string());
+        active.error = Set(Some(error.to_string()));
+        active.update(db.connection()).await?;
+    }
+
+    Ok(())
 }
 
-pub fn get_device_auth_poll_payload(
+pub async fn get_device_auth_poll_payload(
     db: &Database,
     config: &Config,
     flow_id: &str,
-) -> Option<DeviceAuthPoll> {
-    let record = get_device_auth(db, flow_id)?;
+) -> anyhow::Result<Option<DeviceAuthPoll>> {
+    let Some(record) = get_device_auth(db, flow_id).await? else {
+        return Ok(None);
+    };
 
     if record.status == "complete" {
         if let Some(ref token) = record.session_token {
-            let session = crate::auth_middleware::get_session(db, config, token)?;
-            return Some(DeviceAuthPoll::Complete {
-                status: "complete".into(),
-                session: UserSession {
-                    session_token: session.session_token,
-                    user: AppSessionUser {
-                        id: session.user_id,
-                        login: session.login,
-                        name: session.name,
-                        avatar_url: session.avatar_url,
+            if let Some(session) = crate::auth_middleware::get_session(db, config, token).await? {
+                return Ok(Some(DeviceAuthPoll::Complete {
+                    status: "complete".into(),
+                    session: UserSession {
+                        session_token: session.session_token,
+                        user: AppSessionUser {
+                            id: session.user_id,
+                            login: session.login,
+                            name: session.name,
+                            avatar_url: session.avatar_url,
+                        },
                     },
-                },
-            });
+                }));
+            }
         }
     }
 
     if record.status == "pending" {
-        return Some(DeviceAuthPoll::Pending(DeviceAuthPollPending {
+        return Ok(Some(DeviceAuthPoll::Pending(DeviceAuthPollPending {
             status: "pending".into(),
             flow_id: record.flow_id,
             user_code: record.user_code,
@@ -280,10 +371,10 @@ pub fn get_device_auth_poll_payload(
             verification_uri_complete: record.verification_uri_complete,
             expires_at: record.expires_at,
             interval: record.interval,
-        }));
+        })));
     }
 
-    Some(DeviceAuthPoll::Failed {
+    Ok(Some(DeviceAuthPoll::Failed {
         status: if record.status == "denied" {
             "denied".into()
         } else {
@@ -292,5 +383,46 @@ pub fn get_device_auth_poll_payload(
         error: record
             .error
             .unwrap_or_else(|| "GitHub device authorization ended unexpectedly.".into()),
-    })
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn device_auth_payload_transitions_from_pending_to_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::config::test_config(temp.path());
+        let db = crate::db::Database::open(&config).await.unwrap();
+
+        let flow = create_device_auth(
+            &db,
+            "device-code",
+            "user-code",
+            "https://github.com/login/device",
+            None,
+            900,
+            5,
+        )
+        .await
+        .unwrap();
+
+        let pending = get_device_auth_poll_payload(&db, &config, &flow.flow_id)
+            .await
+            .unwrap()
+            .expect("pending payload");
+        assert!(matches!(pending, DeviceAuthPoll::Pending(_)));
+
+        let session = create_local_session(&db, &config).await.unwrap();
+        complete_device_auth(&db, &flow.flow_id, &session.session_token)
+            .await
+            .unwrap();
+
+        let complete = get_device_auth_poll_payload(&db, &config, &flow.flow_id)
+            .await
+            .unwrap()
+            .expect("complete payload");
+        assert!(matches!(complete, DeviceAuthPoll::Complete { .. }));
+    }
 }
