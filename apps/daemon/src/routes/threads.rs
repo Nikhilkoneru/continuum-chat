@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::auth_middleware::require_session;
-use crate::copilot::acp_client::ReplayedMessage;
+use crate::copilot::ReplayedMessage;
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::store::{
@@ -194,8 +194,7 @@ async fn get_detail(
     })))
 }
 
-/// Load messages for a thread via ACP session/load.
-/// This uses the protocol's history replay — no internal file reading.
+/// Load messages for a thread via SDK session.getMessages.
 async fn get_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -207,7 +206,6 @@ async fn get_messages(
         .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     let Some(ref copilot_session_id) = thread.copilot_session_id else {
-        // No ACP session yet — return empty messages
         return Ok(Json(json!({ "messages": [] })));
     };
 
@@ -223,8 +221,7 @@ async fn get_messages(
     }
 }
 
-/// List all ACP sessions via session/list protocol method.
-/// This is the pure ACP view — not filtered by our local thread table.
+/// List all SDK sessions known to the Copilot runtime.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListSessionsQuery {
@@ -245,22 +242,24 @@ async fn list_acp_sessions(
         .await
         .map_err(|e| AppError::Internal(format!("Copilot connection failed: {e}")))?;
 
-    let caps = conn.get_capabilities().await;
-    if !caps.list_sessions {
-        return Ok(Json(json!({
-            "sessions": [],
-            "error": "Agent does not support session/list"
-        })));
-    }
-
-    match conn
-        .list_sessions(query.cwd.as_deref(), query.cursor.as_deref())
-        .await
-    {
-        Ok(result) => Ok(Json(json!({
-            "sessions": result.sessions,
-            "nextCursor": result.next_cursor,
-        }))),
+    match conn.list_sessions().await {
+        Ok(mut sessions) => {
+            if let Some(cwd) = query.cwd.as_deref() {
+                let cwd = cwd.to_ascii_lowercase();
+                sessions.retain(|session| {
+                    session
+                        .summary
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                        .contains(&cwd)
+                });
+            }
+            Ok(Json(json!({
+                "sessions": sessions,
+                "nextCursor": query.cursor,
+            })))
+        }
         Err(e) => {
             tracing::warn!("Failed to list sessions: {e}");
             Ok(Json(json!({
@@ -308,28 +307,32 @@ async fn load_thread_messages(
         return Ok(Vec::new());
     };
 
-    let conn = state.copilot.create_fresh_connection().await?;
-    let caps = conn.get_capabilities().await;
-    if !caps.load_session {
-        anyhow::bail!("Agent does not support session/load");
-    }
-
     let workspace_path =
         workspace_store::ensure_runtime_workspace_directory(&state.config, &thread.workspace_path)?;
-    let replayed_messages = match conn
-        .load_session_messages(copilot_session_id, &workspace_path)
+    let conn = state.copilot.get_or_create_connection().await?;
+    match conn
+        .ensure_session(
+            copilot_session_id,
+            &workspace_path,
+            Some(&thread.model),
+            thread.reasoning_effort.as_deref(),
+        )
         .await
     {
-        Ok(messages) => messages,
-        Err(error) if is_missing_session_error(&error) => {
+        Ok(_) => {}
+        Err(error) if crate::copilot::sdk_client::SdkConnection::is_missing_session_error(&error) => {
             tracing::warn!(
-                "Stored ACP session {} for thread {} no longer exists; clearing it.",
+                "Stored Copilot session {} for thread {} no longer exists; clearing it.",
                 copilot_session_id,
                 thread.id
             );
             thread_store::clear_thread_session(&state.db, &thread.id).await?;
             return Ok(Vec::new());
         }
+        Err(error) => return Err(error),
+    }
+    let replayed_messages = match conn.load_session_messages(copilot_session_id).await {
+        Ok(messages) => messages,
         Err(error) => return Err(error),
     };
     let attachment_sets = attachment_store::list_message_attachments(&state.db, &thread.id).await?;
@@ -340,11 +343,6 @@ async fn load_thread_messages(
         &thread.id,
         &attachment_sets,
     ))
-}
-
-fn is_missing_session_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains("Resource not found: Session") && message.contains("not found")
 }
 
 fn replayed_messages_to_chat_messages(

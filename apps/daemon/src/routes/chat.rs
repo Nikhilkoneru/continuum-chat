@@ -6,13 +6,17 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::post;
 use axum::{Json, Router};
-use base64::Engine as _;
 use futures::stream::Stream;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 use crate::auth_middleware::require_session;
+use crate::copilot::{
+    PendingPermissionOption, PendingPermissionRequest, SDK_PERMISSION_APPROVED,
+    SDK_PERMISSION_DENIED, SendPromptInput, SessionEvent, UserMessageAttachment,
+};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::store::{attachment_store, preferences_store, thread_store, workspace_store};
@@ -231,7 +235,7 @@ async fn stream_chat(
     .await?;
     thread_store::update_thread_preview(&state.db, &thread.id, &prompt).await?;
 
-    let prompt_content = build_prompt_content(&prompt, &attachments, body.canvas.as_ref())?;
+    let prompt_text = build_prompt_text(&prompt, body.canvas.as_ref());
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(256);
     let state_clone = state.clone();
@@ -254,38 +258,64 @@ async fn stream_chat(
             }
         };
 
-        let (acp_session_id, session_was_resumed) = if let Some(ref existing_id) =
+        let (copilot_session_id, session_was_resumed) = if let Some(ref existing_id) =
             thread.copilot_session_id
         {
-            if conn.is_alive().await {
-                let _ = tx
-                    .send(Ok(make_event(
-                        &json!({ "type": "session", "sessionId": existing_id }),
-                    )))
-                    .await;
-                (existing_id.clone(), true)
-            } else {
-                match conn.new_session(&workspace_path).await {
-                    Ok(id) => {
-                        let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
-                        let _ = tx
-                            .send(Ok(make_event(
-                                &json!({ "type": "session", "sessionId": id }),
-                            )))
-                            .await;
-                        (id, false)
+            match conn
+                .ensure_session(
+                    existing_id,
+                    &workspace_path,
+                    Some(&model),
+                    reasoning_effort.as_deref(),
+                )
+                .await
+            {
+                Ok(session_id) => {
+                    let _ = tx
+                        .send(Ok(make_event(
+                            &json!({ "type": "session", "sessionId": session_id }),
+                        )))
+                        .await;
+                    (session_id, true)
+                }
+                Err(error)
+                    if crate::copilot::sdk_client::SdkConnection::is_missing_session_error(&error) =>
+                {
+                    match conn
+                        .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref())
+                        .await
+                    {
+                        Ok(id) => {
+                            let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
+                            let _ = tx
+                                .send(Ok(make_event(
+                                    &json!({ "type": "session", "sessionId": id }),
+                                )))
+                                .await;
+                            (id, false)
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to create session: {e}") }))))
+                                .await;
+                            let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
+                            return;
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to create session: {e}") }))))
-                            .await;
-                        let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
-                        return;
-                    }
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to resume session: {e}") }))))
+                        .await;
+                    let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
+                    return;
                 }
             }
         } else {
-            match conn.new_session(&workspace_path).await {
+            match conn
+                .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref())
+                .await
+            {
                 Ok(id) => {
                     let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
                     let _ = tx
@@ -305,8 +335,29 @@ async fn stream_chat(
             }
         };
 
-        let result_rx = match conn
-            .send_prompt_streaming(&acp_session_id, prompt_content)
+        let next_user_message_index = if attachment_ids.is_empty() {
+            None
+        } else if session_was_resumed {
+            next_user_message_index(&conn, &copilot_session_id).await
+        } else {
+            Some(0)
+        };
+
+        let mut result_rx = match conn
+            .send_prompt_streaming(
+                &copilot_session_id,
+                SendPromptInput {
+                    prompt: prompt_text,
+                    attachments: attachments
+                        .iter()
+                        .map(|attachment| UserMessageAttachment {
+                            path: attachment.file_path.clone(),
+                            display_name: attachment.name.clone(),
+                        })
+                        .collect(),
+                    mode: None,
+                },
+            )
             .await
         {
             Ok(rx) => rx,
@@ -319,14 +370,7 @@ async fn stream_chat(
             }
         };
         if !attachment_ids.is_empty() {
-            match next_user_message_index(
-                &conn,
-                &acp_session_id,
-                &workspace_path,
-                !session_was_resumed,
-            )
-            .await
-            {
+            match next_user_message_index {
                 Some(user_message_index) => {
                     if let Err(error) = attachment_store::save_message_attachments(
                         &state_clone.db,
@@ -354,61 +398,35 @@ async fn stream_chat(
 
         let mut streamed_content = String::new();
         let mut streamed_reasoning = String::new();
+        let mut streamed_message_ids = HashSet::new();
+        let mut streamed_reasoning_ids = HashSet::new();
         let timeout = tokio::time::sleep(Duration::from_secs(600));
         tokio::pin!(timeout);
-        tokio::pin!(result_rx);
 
         loop {
             tokio::select! {
-                result = &mut result_rx => {
-                    for notif in conn.drain_notifications().await {
-                        process_notification(
-                            &notif,
-                            &tx,
-                            &mut streamed_content,
-                            &mut streamed_reasoning,
-                            &state_clone,
-                            &conn,
-                            &acp_session_id,
-                        ).await;
-                    }
+                result = result_rx.recv() => {
                     match result {
-                        Ok(resp) => {
-                            if let Some(ref err) = resp.error {
-                                let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": err.message })))).await;
-                            }
-                            if !streamed_reasoning.is_empty() {
-                                let _ = tx.send(Ok(make_event(&json!({ "type": "reasoning", "content": streamed_reasoning })))).await;
-                            }
-                            if let Some(usage) = extract_usage(resp.result.as_ref(), &model) {
-                                let _ = tx.send(Ok(make_event(&json!({ "type": "usage", "usage": usage })))).await;
-                            }
-                            let stop_reason = resp.result.as_ref()
-                                .and_then(|r| r.get("stopReason"))
-                                .and_then(|v| v.as_str());
-                            if stop_reason == Some("cancelled") {
-                                let _ = tx.send(Ok(make_event(&json!({ "type": "aborted", "message": "Response stopped." })))).await;
-                            } else {
-                                let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
+                        Ok(event) => {
+                            if process_event(
+                                &event,
+                                &tx,
+                                &mut streamed_content,
+                                &mut streamed_reasoning,
+                                &mut streamed_message_ids,
+                                &mut streamed_reasoning_ids,
+                                &state_clone,
+                                &conn,
+                                &copilot_session_id,
+                            ).await {
+                                break;
                             }
                         }
-                        Err(_) => {
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": "Connection lost." })))).await;
+                            break;
                         }
-                    }
-                    break;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    for notif in conn.drain_notifications().await {
-                        process_notification(
-                            &notif,
-                            &tx,
-                            &mut streamed_content,
-                            &mut streamed_reasoning,
-                            &state_clone,
-                            &conn,
-                            &acp_session_id,
-                        ).await;
                     }
                 }
                 _ = &mut timeout => {
@@ -429,58 +447,8 @@ async fn stream_chat(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
-fn build_prompt_content(
-    prompt: &str,
-    attachments: &[attachment_store::AttachmentRecord],
-    canvas: Option<&CanvasPromptContext>,
-) -> Result<Vec<serde_json::Value>, AppError> {
-    let canvas_prompt = build_canvas_prompt(prompt, canvas);
-    let mut content = vec![json!({ "type": "text", "text": canvas_prompt })];
-
-    for attachment in attachments {
-        let bytes = std::fs::read(&attachment.file_path).map_err(|error| {
-            AppError::Internal(format!(
-                "Failed to read attachment '{}': {error}",
-                attachment.name
-            ))
-        })?;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let resource_uri = format!("file:///attachment/{}", attachment.name);
-        let block = if attachment.mime_type.starts_with("image/") {
-            json!({
-                "type": "image",
-                "mimeType": attachment.mime_type,
-                "data": encoded,
-            })
-        } else if attachment.mime_type.starts_with("audio/") {
-            json!({
-                "type": "audio",
-                "mimeType": attachment.mime_type,
-                "data": encoded,
-            })
-        } else if let Ok(text) = std::str::from_utf8(&bytes) {
-            json!({
-                "type": "resource",
-                "resource": {
-                    "uri": resource_uri,
-                    "mimeType": attachment.mime_type,
-                    "text": text,
-                }
-            })
-        } else {
-            json!({
-                "type": "resource",
-                "resource": {
-                    "uri": resource_uri,
-                    "mimeType": attachment.mime_type,
-                    "blob": encoded,
-                }
-            })
-        };
-        content.push(block);
-    }
-
-    Ok(content)
+fn build_prompt_text(prompt: &str, canvas: Option<&CanvasPromptContext>) -> String {
+    build_canvas_prompt(prompt, canvas)
 }
 
 fn build_canvas_prompt(prompt: &str, canvas: Option<&CanvasPromptContext>) -> String {
@@ -557,24 +525,10 @@ fn make_event(data: &serde_json::Value) -> Event {
 }
 
 async fn next_user_message_index(
-    conn: &crate::copilot::acp_client::AcpConnection,
+    conn: &crate::copilot::sdk_client::SdkConnection,
     session_id: &str,
-    workspace_path: &str,
-    assume_empty: bool,
 ) -> Option<usize> {
-    if assume_empty {
-        return Some(0);
-    }
-
-    let capabilities = conn.get_capabilities().await;
-    if !capabilities.load_session {
-        return None;
-    }
-
-    let replayed_messages = conn
-        .load_session_messages(session_id, workspace_path)
-        .await
-        .ok()?;
+    let replayed_messages = conn.load_session_messages(session_id).await.ok()?;
     Some(
         replayed_messages
             .iter()
@@ -583,47 +537,58 @@ async fn next_user_message_index(
     )
 }
 
-async fn process_notification(
-    notif: &crate::copilot::types::JsonRpcNotification,
+async fn process_event(
+    event: &SessionEvent,
     tx: &mpsc::Sender<Result<Event, Infallible>>,
     streamed_content: &mut String,
     streamed_reasoning: &mut String,
+    streamed_message_ids: &mut HashSet<String>,
+    streamed_reasoning_ids: &mut HashSet<String>,
     state: &AppState,
-    conn: &crate::copilot::acp_client::AcpConnection,
+    conn: &crate::copilot::sdk_client::SdkConnection,
     session_id: &str,
-) {
-    if notif.method.starts_with("_server_request/") {
-        process_server_request_notification(notif, tx, state, conn, session_id).await;
-        return;
-    }
-
-    if notif.method != "session/update" {
-        return;
-    }
-
-    let Some(ref params) = notif.params else {
-        return;
-    };
-    let Some(update) = params.get("update") else {
-        return;
-    };
-    let update_type = update
-        .get("sessionUpdate")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    match update_type {
-        "agent_message_chunk" | "message" | "agent_message" => {
-            for text in extract_text_fragments(update.get("content")) {
+) -> bool {
+    match event.event_type.as_str() {
+        "assistant.message_delta" => {
+            let message_id = event
+                .data
+                .get("messageId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            streamed_message_ids.insert(message_id);
+            if let Some(text) = event.data.get("deltaContent").and_then(|value| value.as_str()) {
                 streamed_content.push_str(&text);
                 let _ = tx
                     .send(Ok(make_event(&json!({ "type": "chunk", "delta": text }))))
                     .await;
             }
         }
-        "reasoning" | "agent_reasoning_chunk" | "agent_thought_chunk" => {
-            for text in extract_text_fragments(update.get("content")) {
-                streamed_reasoning.push_str(&text);
+        "assistant.message" => {
+            let message_id = event
+                .data
+                .get("messageId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if !streamed_message_ids.contains(message_id) {
+                if let Some(text) = event.data.get("content").and_then(|value| value.as_str()) {
+                    streamed_content.push_str(text);
+                    let _ = tx
+                        .send(Ok(make_event(&json!({ "type": "chunk", "delta": text }))))
+                        .await;
+                }
+            }
+        }
+        "assistant.reasoning_delta" => {
+            let reasoning_id = event
+                .data
+                .get("reasoningId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            streamed_reasoning_ids.insert(reasoning_id);
+            if let Some(text) = event.data.get("deltaContent").and_then(|value| value.as_str()) {
+                streamed_reasoning.push_str(text);
                 let _ = tx
                     .send(Ok(make_event(
                         &json!({ "type": "reasoning_delta", "delta": text }),
@@ -631,160 +596,193 @@ async fn process_notification(
                     .await;
             }
         }
-        "tool_call" => {
-            let id = update
-                .get("toolCallId")
+        "assistant.reasoning" => {
+            let reasoning_id = event
+                .data
+                .get("reasoningId")
                 .and_then(|v| v.as_str())
-                .or_else(|| update.get("id").and_then(|v| v.as_str()))
-                .unwrap_or("unknown");
-            let name = update
-                .get("title")
-                .and_then(|v| v.as_str())
-                .or_else(|| update.get("name").and_then(|v| v.as_str()))
-                .unwrap_or("Tool");
-            let kind = update.get("kind").and_then(|v| v.as_str());
-            let status = update
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("running");
-            let now = chrono::Utc::now().to_rfc3339();
-
-            let _ = tx.send(Ok(make_event(&json!({
-                "type": "tool_event",
-                "activity": {
-                    "id": id,
-                    "toolName": name,
-                    "kind": kind,
-                    "status": map_tool_status(status),
-                    "startedAt": now,
-                    "updatedAt": now,
-                    "arguments": update.get("rawInput").or(update.get("arguments")).map(|v| v.to_string()),
-                    "locations": extract_locations(update.get("locations")),
-                }
-            })))).await;
-        }
-        "tool_call_update" | "tool_result" => {
-            let id = update
-                .get("toolCallId")
-                .and_then(|v| v.as_str())
-                .or_else(|| update.get("id").and_then(|v| v.as_str()))
-                .unwrap_or("unknown");
-            let now = chrono::Utc::now().to_rfc3339();
-            let _ = tx.send(Ok(make_event(&json!({
-                "type": "tool_event",
-                "activity": {
-                    "id": id,
-                    "toolName": update.get("title").or(update.get("name")).and_then(|v| v.as_str()).unwrap_or("Tool"),
-                    "status": map_tool_status(update.get("status").and_then(|v| v.as_str()).unwrap_or("running")),
-                    "startedAt": now,
-                    "updatedAt": now,
-                    "arguments": update.get("rawInput").or(update.get("arguments")).map(|v| v.to_string()),
-                    "result": update.get("content").or(update.get("result")).map(|v| v.to_string()),
-                    "additionalContext": extract_progress_message(update),
-                    "error": update.get("error").map(|v| v.to_string()),
-                }
-            })))).await;
-        }
-        "plan" | "agent_plan" => {
-            let items = extract_plan_items(update);
-            if !items.is_empty() {
-                let _ = tx
-                    .send(Ok(make_event(&json!({ "type": "plan", "items": items }))))
-                    .await;
-            }
-        }
-        "status_update" | "status" | "agent_status" => {
-            if let Some(phase) = extract_status_text(update) {
-                let _ = tx
-                    .send(Ok(make_event(&json!({ "type": "status", "phase": phase }))))
-                    .await;
-            }
-        }
-        _ => {}
-    }
-}
-
-async fn process_server_request_notification(
-    notif: &crate::copilot::types::JsonRpcNotification,
-    tx: &mpsc::Sender<Result<Event, Infallible>>,
-    state: &AppState,
-    conn: &crate::copilot::acp_client::AcpConnection,
-    session_id: &str,
-) {
-    let Some(params) = notif.params.as_ref() else {
-        return;
-    };
-    let Some(request_id) = params.get("requestId").and_then(|value| value.as_str()) else {
-        return;
-    };
-
-    match notif.method.as_str() {
-        "_server_request/session/userInput" => {
-            if let Some(request) = conn.get_pending_user_input(request_id).await {
-                let _ = tx
-                    .send(Ok(make_event(
-                        &json!({ "type": "user_input_request", "request": request }),
-                    )))
-                    .await;
-            }
-        }
-        "_server_request/session/requestPermission"
-        | "_server_request/session/request_permission"
-        | "_server_request/session/request" => {
-            if let Some(request) = conn.get_pending_permission(request_id).await {
-                let approval_mode = match preferences_store::get_preferences(&state.db, &state.config).await {
-                    Ok(prefs) => prefs.approval_mode,
-                    Err(error) => {
-                        let _ = tx.send(Ok(make_event(&json!({
-                            "type": "error",
-                            "message": format!("Failed to load approval preferences: {error}")
-                        })))).await;
-                        return;
-                    }
-                };
-                if let Some((option_id, decision, reason)) =
-                    auto_decide_permission(&request, &approval_mode)
-                {
-                    match conn
-                        .respond_to_permission_request(request_id, &option_id)
-                        .await
-                    {
-                        Ok(()) => {
-                            let now = chrono::Utc::now().to_rfc3339();
-                            let _ = tx.send(Ok(make_event(&json!({
-                                "type": "tool_event",
-                                "activity": {
-                                    "id": request.tool_call_id.clone().unwrap_or_else(|| request.request_id.clone()),
-                                    "toolName": request.tool_name.clone().unwrap_or_else(|| "Tool".to_string()),
-                                    "kind": request.tool_kind,
-                                    "status": "running",
-                                    "startedAt": request.created_at,
-                                    "updatedAt": now,
-                                    "permissionDecision": decision,
-                                    "permissionDecisionReason": reason,
-                                }
-                            })))).await;
-                            let _ = tx.send(Ok(make_event(&json!({ "type": "permission_cleared", "requestId": request_id })))).await;
-                        }
-                        Err(error) => {
-                            let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to respond to Copilot permission request: {error}") })))).await;
-                        }
-                    }
-                } else if request.session_id == session_id {
+                .unwrap_or_default();
+            if !streamed_reasoning_ids.contains(reasoning_id) {
+                if let Some(text) = event.data.get("content").and_then(|value| value.as_str()) {
+                    streamed_reasoning.push_str(text);
                     let _ = tx
                         .send(Ok(make_event(
-                            &json!({ "type": "permission_request", "request": request }),
+                            &json!({ "type": "reasoning_delta", "delta": text }),
                         )))
                         .await;
                 }
             }
         }
+        "assistant.intent" => {
+            if let Some(phase) = event.data.get("intent").and_then(|value| value.as_str()) {
+                let _ = tx
+                    .send(Ok(make_event(&json!({ "type": "status", "phase": phase }))))
+                    .await;
+            }
+        }
+        "session.info" => {
+            if let Some(phase) = event.data.get("message").and_then(|value| value.as_str()) {
+                let _ = tx
+                    .send(Ok(make_event(&json!({ "type": "status", "phase": phase }))))
+                    .await;
+            }
+        }
+        "tool.user_requested" | "tool.execution_start" => {
+            let _ = tx.send(Ok(make_event(&json!({
+                "type": "tool_event",
+                "activity": {
+                    "id": event.data.get("toolCallId").and_then(|value| value.as_str()).unwrap_or("unknown"),
+                    "toolName": event.data.get("toolName").and_then(|value| value.as_str()).unwrap_or("Tool"),
+                    "status": "running",
+                    "startedAt": event.timestamp,
+                    "updatedAt": event.timestamp,
+                    "arguments": event.data.get("arguments").map(|value| value.to_string()),
+                }
+            })))).await;
+        }
+        "tool.execution_progress" => {
+            let _ = tx.send(Ok(make_event(&json!({
+                "type": "tool_event",
+                "activity": {
+                    "id": event.data.get("toolCallId").and_then(|value| value.as_str()).unwrap_or("unknown"),
+                    "toolName": "Tool",
+                    "status": "running",
+                    "startedAt": event.timestamp,
+                    "updatedAt": event.timestamp,
+                    "additionalContext": event.data.get("progressMessage").and_then(|value| value.as_str()),
+                }
+            })))).await;
+        }
+        "tool.execution_partial_result" => {
+            let _ = tx.send(Ok(make_event(&json!({
+                "type": "tool_event",
+                "activity": {
+                    "id": event.data.get("toolCallId").and_then(|value| value.as_str()).unwrap_or("unknown"),
+                    "toolName": "Tool",
+                    "status": "running",
+                    "startedAt": event.timestamp,
+                    "updatedAt": event.timestamp,
+                    "result": event.data.get("partialOutput").and_then(|value| value.as_str()),
+                }
+            })))).await;
+        }
+        "tool.execution_complete" => {
+            let success = event
+                .data
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let _ = tx.send(Ok(make_event(&json!({
+                "type": "tool_event",
+                "activity": {
+                    "id": event.data.get("toolCallId").and_then(|value| value.as_str()).unwrap_or("unknown"),
+                    "toolName": event.data.get("mcpToolName").or_else(|| event.data.get("toolName")).and_then(|value| value.as_str()).unwrap_or("Tool"),
+                    "status": if success { "completed" } else { "failed" },
+                    "startedAt": event.timestamp,
+                    "updatedAt": event.timestamp,
+                    "result": event.data.get("result").and_then(|value| value.get("content")).map(|value| value.to_string()),
+                    "error": event.data.get("error").and_then(|value| value.get("message")).and_then(|value| value.as_str()),
+                }
+            })))).await;
+        }
+        "assistant.usage" => {
+            if let Some(usage) = extract_usage_from_event(&event.data) {
+                let _ = tx
+                    .send(Ok(make_event(&json!({ "type": "usage", "usage": usage }))))
+                    .await;
+            }
+        }
+        "sdk.user_input_request" => {
+            let _ = tx
+                .send(Ok(make_event(
+                    &json!({ "type": "user_input_request", "request": event.data }),
+                )))
+                .await;
+        }
+        "sdk.permission_request" => {
+            let Ok(request) = serde_json::from_value::<PendingPermissionRequest>(event.data.clone()) else {
+                return false;
+            };
+            let approval_mode = match preferences_store::get_preferences(&state.db, &state.config).await {
+                Ok(prefs) => prefs.approval_mode,
+                Err(error) => {
+                    let _ = tx.send(Ok(make_event(&json!({
+                        "type": "error",
+                        "message": format!("Failed to load approval preferences: {error}")
+                    })))).await;
+                    return false;
+                }
+            };
+            if let Some((option_id, decision, reason)) = auto_decide_permission(&request, &approval_mode) {
+                match conn.respond_to_permission_request(&request.request_id, &option_id).await {
+                    Ok(()) => {
+                        let _ = tx.send(Ok(make_event(&json!({
+                            "type": "tool_event",
+                            "activity": {
+                                "id": request.tool_call_id.clone().unwrap_or_else(|| request.request_id.clone()),
+                                "toolName": request.tool_name.clone().unwrap_or_else(|| "Tool".to_string()),
+                                "kind": request.tool_kind,
+                                "status": "running",
+                                "startedAt": request.created_at,
+                                "updatedAt": event.timestamp,
+                                "permissionDecision": decision,
+                                "permissionDecisionReason": reason,
+                            }
+                        })))).await;
+                        let _ = tx.send(Ok(make_event(&json!({ "type": "permission_cleared", "requestId": request.request_id })))).await;
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Ok(make_event(&json!({ "type": "error", "message": format!("Failed to respond to Copilot permission request: {error}") })))).await;
+                    }
+                }
+            } else if request.session_id == session_id {
+                let _ = tx
+                    .send(Ok(make_event(
+                        &json!({ "type": "permission_request", "request": request }),
+                    )))
+                    .await;
+            }
+        }
+        "abort" => {
+            let message = event
+                .data
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Response stopped.");
+            let _ = tx
+                .send(Ok(make_event(&json!({ "type": "aborted", "message": message }))))
+                .await;
+            return true;
+        }
+        "session.error" => {
+            let message = event
+                .data
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Copilot request failed.");
+            let _ = tx
+                .send(Ok(make_event(&json!({ "type": "error", "message": message }))))
+                .await;
+            return true;
+        }
+        "session.idle" => {
+            if !streamed_reasoning.is_empty() {
+                let _ = tx
+                    .send(Ok(make_event(
+                        &json!({ "type": "reasoning", "content": streamed_reasoning }),
+                    )))
+                    .await;
+            }
+            let _ = tx.send(Ok(make_event(&json!({ "type": "done" })))).await;
+            return true;
+        }
         _ => {}
     }
+    false
 }
 
 fn auto_decide_permission(
-    request: &crate::copilot::acp_client::PendingPermissionRequest,
+    request: &PendingPermissionRequest,
     approval_mode: &str,
 ) -> Option<(String, &'static str, String)> {
     if approval_mode == "approve-all" {
@@ -836,8 +834,8 @@ fn auto_decide_permission(
 }
 
 fn preferred_allow_option(
-    options: &[crate::copilot::acp_client::PendingPermissionOption],
-) -> Option<&crate::copilot::acp_client::PendingPermissionOption> {
+    options: &[PendingPermissionOption],
+) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_allow_kind).unwrap_or(false))
@@ -850,8 +848,8 @@ fn preferred_allow_option(
 }
 
 fn safe_allow_option(
-    options: &[crate::copilot::acp_client::PendingPermissionOption],
-) -> Option<&crate::copilot::acp_client::PendingPermissionOption> {
+    options: &[PendingPermissionOption],
+) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_allow_kind).unwrap_or(false))
@@ -863,8 +861,8 @@ fn safe_allow_option(
 }
 
 fn preferred_deny_option(
-    options: &[crate::copilot::acp_client::PendingPermissionOption],
-) -> Option<&crate::copilot::acp_client::PendingPermissionOption> {
+    options: &[PendingPermissionOption],
+) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_reject_kind).unwrap_or(false))
@@ -892,129 +890,48 @@ fn is_reject_kind(kind: &str) -> bool {
 fn is_allow_option_id(option_id: &str) -> bool {
     matches!(
         option_id,
-        "allow_once" | "allow-once" | "allow_always" | "allow-always"
+        SDK_PERMISSION_APPROVED | "allow_once" | "allow-once" | "allow_always" | "allow-always"
     )
 }
 
 fn is_reject_option_id(option_id: &str) -> bool {
     matches!(
         option_id,
-        "reject_once" | "reject-once" | "reject_always" | "reject-always" | "deny"
+        SDK_PERMISSION_DENIED
+            | "reject_once"
+            | "reject-once"
+            | "reject_always"
+            | "reject-always"
+            | "deny"
     )
 }
 
-fn extract_usage(result: Option<&serde_json::Value>, model: &str) -> Option<serde_json::Value> {
-    let result = result?;
-    let usage = result.get("usage")?;
+fn extract_usage_from_event(data: &serde_json::Value) -> Option<serde_json::Value> {
+    let model = data
+        .get("model")
+        .or_else(|| data.get("modelId"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let usage = data.get("usage").unwrap_or(data);
+    let has_any_tokens = usage.get("inputTokens").is_some()
+        || usage.get("input_tokens").is_some()
+        || usage.get("outputTokens").is_some()
+        || usage.get("output_tokens").is_some()
+        || usage.get("cacheReadTokens").is_some()
+        || usage.get("cache_read_tokens").is_some()
+        || usage.get("cacheWriteTokens").is_some()
+        || usage.get("cache_write_tokens").is_some()
+        || usage.get("duration").is_some();
+    if !has_any_tokens {
+        return None;
+    }
+    let usage = data.get("usage").unwrap_or(data);
     Some(json!({
-        "model": result.get("model").and_then(|value| value.as_str()).unwrap_or(model),
+        "model": model,
         "inputTokens": usage.get("inputTokens").or_else(|| usage.get("input_tokens")).and_then(|value| value.as_u64()),
         "outputTokens": usage.get("outputTokens").or_else(|| usage.get("output_tokens")).and_then(|value| value.as_u64()),
         "cacheReadTokens": usage.get("cacheReadTokens").or_else(|| usage.get("cache_read_tokens")).and_then(|value| value.as_u64()),
         "cacheWriteTokens": usage.get("cacheWriteTokens").or_else(|| usage.get("cache_write_tokens")).and_then(|value| value.as_u64()),
         "duration": usage.get("duration").and_then(|value| value.as_u64()),
     }))
-}
-
-fn extract_text_fragments(value: Option<&serde_json::Value>) -> Vec<String> {
-    match value {
-        Some(serde_json::Value::String(text)) => vec![text.clone()],
-        Some(serde_json::Value::Object(object)) => object
-            .get("text")
-            .and_then(|value| value.as_str())
-            .map(|value| vec![value.to_string()])
-            .unwrap_or_default(),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| {
-                item.get("text")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned)
-                    .or_else(|| item.as_str().map(str::to_owned))
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn extract_plan_items(update: &serde_json::Value) -> Vec<String> {
-    if let Some(items) = update.get("items").and_then(|value| value.as_array()) {
-        let extracted = items
-            .iter()
-            .filter_map(|item| {
-                item.get("title")
-                    .or_else(|| item.get("label"))
-                    .or_else(|| item.get("text"))
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned)
-                    .or_else(|| item.as_str().map(str::to_owned))
-            })
-            .collect::<Vec<_>>();
-        if !extracted.is_empty() {
-            return extracted;
-        }
-    }
-
-    extract_text_fragments(update.get("content"))
-        .into_iter()
-        .flat_map(|text| {
-            text.lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-fn extract_status_text(update: &serde_json::Value) -> Option<String> {
-    update
-        .get("message")
-        .or_else(|| update.get("status"))
-        .or_else(|| update.get("label"))
-        .or_else(|| update.get("title"))
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-        .or_else(|| {
-            extract_text_fragments(update.get("content"))
-                .into_iter()
-                .next()
-        })
-}
-
-fn extract_progress_message(update: &serde_json::Value) -> Option<String> {
-    update
-        .get("progressMessage")
-        .or_else(|| update.get("additionalContext"))
-        .or_else(|| update.get("message"))
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-}
-
-fn extract_locations(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
-    let locations = value?.as_array()?;
-    let collected = locations
-        .iter()
-        .filter_map(|location| {
-            location
-                .get("path")
-                .or_else(|| location.get("uri"))
-                .and_then(|value| value.as_str())
-                .map(str::to_owned)
-                .or_else(|| location.as_str().map(str::to_owned))
-        })
-        .collect::<Vec<_>>();
-    if collected.is_empty() {
-        None
-    } else {
-        Some(collected)
-    }
-}
-
-fn map_tool_status(status: &str) -> &'static str {
-    match status {
-        "completed" | "done" => "completed",
-        "failed" | "error" => "failed",
-        _ => "running",
-    }
 }

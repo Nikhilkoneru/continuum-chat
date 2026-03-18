@@ -64,32 +64,56 @@ async fn get_status(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let _session = require_session(&headers, &state.db, &state.config).await?;
 
-    // Basic status response — ACP connection status
-    let connected = match state.copilot.get_or_create_connection().await {
-        Ok(conn) => conn.is_alive().await,
-        Err(_) => false,
+    let connection = state.copilot.get_or_create_connection().await;
+    let connected = matches!(connection, Ok(ref conn) if conn.is_alive().await);
+    let status = match &connection {
+        Ok(conn) => conn.get_status().await.ok(),
+        Err(_) => None,
+    };
+    let auth = match &connection {
+        Ok(conn) => conn.get_auth_status().await.ok(),
+        Err(_) => None,
+    };
+    let sessions = match &connection {
+        Ok(conn) => conn.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let last_session_id = match &connection {
+        Ok(conn) => conn.get_last_session_id().await.ok().flatten(),
+        Err(_) => None,
     };
 
     Ok(Json(json!({
         "status": {
-            "version": crate::runtime::app_version(),
-            "protocolVersion": 1,
+            "version": status.as_ref().map(|value| value.version.clone()).unwrap_or_else(|| crate::runtime::app_version().to_string()),
+            "protocolVersion": status.as_ref().map(|value| value.protocol_version).unwrap_or(2),
             "connectionState": if connected { "connected" } else { "disconnected" },
         },
         "auth": {
-            "isAuthenticated": state.config.is_copilot_configured(),
-            "authType": if state.config.copilot_use_logged_in_user { "user" } else { "token" },
+            "isAuthenticated": auth.as_ref().map(|value| value.is_authenticated).unwrap_or_else(|| state.config.is_copilot_configured()),
+            "authType": auth.as_ref().and_then(|value| value.auth_type.clone()).unwrap_or_else(|| state.config.copilot_auth_mode().to_string()),
+            "host": auth.as_ref().and_then(|value| value.host.clone()),
+            "login": auth.as_ref().and_then(|value| value.login.clone()),
+            "statusMessage": auth.as_ref().and_then(|value| value.status_message.clone()),
         },
-        "sessions": [],
+        "sessions": sessions,
+        "lastSessionId": last_session_id,
     })))
 }
 
 async fn delete_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path(_session_id): axum::extract::Path<String>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<axum::http::StatusCode, AppError> {
     let _session = require_session(&headers, &state.db, &state.config).await?;
-    // ACP doesn't have session deletion — sessions are managed by the agent
+    let conn = state
+        .copilot
+        .get_or_create_connection()
+        .await
+        .map_err(|error| AppError::Internal(format!("Copilot connection failed: {error}")))?;
+    conn.delete_session(&session_id)
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to delete Copilot session: {error}")))?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

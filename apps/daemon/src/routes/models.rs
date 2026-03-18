@@ -7,7 +7,6 @@ use serde_json::json;
 use crate::auth_middleware::require_session;
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::store::workspace_store;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/models", get(list_models))
@@ -19,49 +18,25 @@ async fn list_models(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let _session = require_session(&headers, &state.db, &state.config).await?;
 
-    // Try to get models from ACP connection
     if let Ok(conn) = state.copilot.get_or_create_connection().await {
-        // If no cached models yet, create a temporary session to populate them
-        if conn.get_cached_models().await.is_none() {
-            let general_workspace = state
-                .config
-                .default_general_chat_workspace_path()
-                .to_string_lossy()
-                .to_string();
-            if let Ok(runtime_workspace) =
-                workspace_store::ensure_runtime_workspace_directory(&state.config, &general_workspace)
-            {
-                let _ = conn.new_session(&runtime_workspace).await;
-            }
-        }
-
-        if let Some(models_data) = conn.get_cached_models().await {
-            if let Some(available) = models_data
-                .get("availableModels")
-                .and_then(|v| v.as_array())
-            {
-                let models: Vec<serde_json::Value> = available
-                    .iter()
-                    .map(|m| {
-                        let id = m.get("modelId").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
-                        let usage = m.get("_meta")
-                            .and_then(|meta| meta.get("copilotUsage"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("0x");
-                        json!({
-                            "id": id,
-                            "name": name,
-                            "source": "sdk",
-                            "supportsReasoning": false,
-                            "billing": {
-                                "multiplier": usage.trim_end_matches('x').parse::<f64>().unwrap_or(0.0)
-                            }
-                        })
+        if let Ok(models) = conn.list_models().await {
+            let models: Vec<serde_json::Value> = models
+                .into_iter()
+                .map(|model| {
+                    json!({
+                        "id": model.id,
+                        "name": model.name,
+                        "source": "sdk",
+                        "supportsReasoning": model.capabilities.supports.reasoning_effort,
+                        "capabilities": model.capabilities,
+                        "policy": model.policy,
+                        "billing": model.billing,
+                        "supportedReasoningEfforts": model.supported_reasoning_efforts,
+                        "defaultReasoningEffort": model.default_reasoning_effort,
                     })
-                    .collect();
-                return Ok(Json(json!({ "models": models })));
-            }
+                })
+                .collect();
+            return Ok(Json(json!({ "models": models })));
         }
     }
 
