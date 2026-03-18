@@ -301,6 +301,7 @@ async fn stream_chat(
                     &workspace_path,
                     Some(&model),
                     reasoning_effort.as_deref(),
+                    None,
                 )
                 .await
             {
@@ -317,7 +318,7 @@ async fn stream_chat(
                 {
                     let _ = thread_store::clear_thread_session(&state_clone.db, &thread_id).await;
                     match conn
-                        .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref())
+                        .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref(), None)
                         .await
                     {
                         Ok(id) => {
@@ -348,7 +349,7 @@ async fn stream_chat(
             }
         } else {
             match conn
-                .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref())
+                .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref(), None)
                 .await
             {
                 Ok(id) => {

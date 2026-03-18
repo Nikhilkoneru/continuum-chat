@@ -8,9 +8,9 @@ use crate::config::Config;
 use sdk_client::SdkConnection;
 
 pub use sdk_client::{
-    PendingPermissionOption, PendingPermissionRequest, ReplayedMessage, SDK_PERMISSION_APPROVED,
-    SDK_PERMISSION_DENIED, PendingToolCallRequest, SendPromptInput, SessionEvent,
-    UserMessageAttachment,
+    PendingPermissionOption, PendingPermissionRequest, PendingToolCallRequest, ReplayedMessage,
+    SDK_PERMISSION_APPROVED, SDK_PERMISSION_DENIED, SendPromptInput, SessionEvent,
+    SessionToolPolicy, UserMessageAttachment,
 };
 
 pub struct CopilotManager {

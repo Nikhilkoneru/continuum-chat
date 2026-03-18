@@ -242,7 +242,7 @@ struct SessionRecord {
 
 struct PendingUserInputState {
     request: PendingUserInputRequest,
-    response_tx: oneshot::Sender<String>,
+    response_tx: Option<oneshot::Sender<String>>,
 }
 
 struct PendingPermissionState {
@@ -347,11 +347,12 @@ impl SdkConnection {
         cwd: &str,
         model: Option<&str>,
         reasoning_effort: Option<&str>,
+        tool_policy: Option<&SessionToolPolicy>,
     ) -> anyhow::Result<String> {
         let result = self
             .invoke(
                 "session.create",
-                Some(build_session_config(cwd, model, reasoning_effort)),
+                Some(build_session_config(cwd, model, reasoning_effort, tool_policy)),
             )
             .await?;
         let session_id = result
@@ -374,11 +375,12 @@ impl SdkConnection {
         cwd: &str,
         model: Option<&str>,
         reasoning_effort: Option<&str>,
+        tool_policy: Option<&SessionToolPolicy>,
     ) -> anyhow::Result<String> {
         if self.sessions.read().await.contains_key(session_id) {
             return Ok(session_id.to_string());
         }
-        self.resume_session(session_id, cwd, model, reasoning_effort)
+        self.resume_session(session_id, cwd, model, reasoning_effort, tool_policy)
             .await
     }
 
@@ -388,8 +390,9 @@ impl SdkConnection {
         cwd: &str,
         model: Option<&str>,
         reasoning_effort: Option<&str>,
+        tool_policy: Option<&SessionToolPolicy>,
     ) -> anyhow::Result<String> {
-        let mut params = build_resume_config(cwd, model, reasoning_effort);
+        let mut params = build_resume_config(cwd, model, reasoning_effort, tool_policy);
         params["sessionId"] = json!(session_id);
         let result = self.invoke("session.resume", Some(params)).await?;
         let resumed_id = result
@@ -587,10 +590,22 @@ impl SdkConnection {
         let Some(state) = state else {
             anyhow::bail!("Copilot user input request {request_id} is no longer pending");
         };
-        state
-            .response_tx
-            .send(answer.to_string())
-            .map_err(|_| anyhow::anyhow!("Failed to deliver user input response"))
+        if let Some(response_tx) = state.response_tx {
+            response_tx
+                .send(answer.to_string())
+                .map_err(|_| anyhow::anyhow!("Failed to deliver user input response"))
+        } else {
+            self.invoke(
+                "session.userInput.handlePendingUserInputRequest",
+                Some(json!({
+                    "sessionId": state.request.session_id,
+                    "requestId": request_id,
+                    "answer": answer,
+                })),
+            )
+            .await
+            .map(|_| ())
+        }
     }
 
     pub async fn respond_to_permission_request(
@@ -756,6 +771,7 @@ impl SdkConnection {
                         handle_notification(
                             notification,
                             &sessions,
+                            &pending_user_inputs,
                             &pending_permissions,
                             &pending_tool_calls,
                         )
@@ -823,6 +839,7 @@ impl SessionEventEnvelope {
 async fn handle_notification(
     notification: JsonRpcRequest,
     sessions: &Arc<RwLock<HashMap<String, Arc<SessionRecord>>>>,
+    pending_user_inputs: &Arc<Mutex<HashMap<String, PendingUserInputState>>>,
     pending_permissions: &Arc<Mutex<HashMap<String, PendingPermissionState>>>,
     pending_tool_calls: &Arc<Mutex<HashMap<String, PendingToolCallState>>>,
 ) {
@@ -847,6 +864,7 @@ async fn handle_notification(
                     record,
                     session_id,
                     &event,
+                    pending_user_inputs,
                     pending_permissions,
                     pending_tool_calls,
                 )
@@ -1062,7 +1080,7 @@ async fn handle_user_input_request(
         request_id.clone(),
         PendingUserInputState {
             request: request.clone(),
-            response_tx,
+            response_tx: Some(response_tx),
         },
     );
 
@@ -1153,7 +1171,20 @@ async fn handle_tool_call_request(
     Ok(json!({ "result": result }))
 }
 
-fn build_session_config(cwd: &str, model: Option<&str>, reasoning_effort: Option<&str>) -> Value {
+/// Controls which built-in Copilot tools are available for a session.
+pub struct SessionToolPolicy {
+    /// Specific tools to include (allowlist). `None` = all built-in tools.
+    pub available_tools: Option<Vec<String>>,
+    /// Specific tools to exclude (blocklist). Applied after `available_tools`.
+    pub excluded_tools: Option<Vec<String>>,
+}
+
+fn build_session_config(
+    cwd: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    tool_policy: Option<&SessionToolPolicy>,
+) -> Value {
     let mut config = json!({
         "workingDirectory": cwd,
         "streaming": true,
@@ -1167,21 +1198,84 @@ fn build_session_config(cwd: &str, model: Option<&str>, reasoning_effort: Option
     if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
         config["reasoningEffort"] = json!(reasoning_effort);
     }
+    if let Some(policy) = tool_policy {
+        if let Some(ref available) = policy.available_tools {
+            config["availableTools"] = json!(available);
+        }
+        if let Some(ref excluded) = policy.excluded_tools {
+            config["excludedTools"] = json!(excluded);
+        }
+    }
     config
 }
 
-fn build_resume_config(cwd: &str, model: Option<&str>, reasoning_effort: Option<&str>) -> Value {
-    build_session_config(cwd, model, reasoning_effort)
+fn build_resume_config(
+    cwd: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    tool_policy: Option<&SessionToolPolicy>,
+) -> Value {
+    build_session_config(cwd, model, reasoning_effort, tool_policy)
 }
 
 async fn maybe_emit_v3_bridge_events(
     session: &Arc<SessionRecord>,
     session_id: &str,
     event: &SessionEvent,
+    pending_user_inputs: &Arc<Mutex<HashMap<String, PendingUserInputState>>>,
     pending_permissions: &Arc<Mutex<HashMap<String, PendingPermissionState>>>,
     pending_tool_calls: &Arc<Mutex<HashMap<String, PendingToolCallState>>>,
 ) {
     match event.event_type.as_str() {
+        "user_input.requested" | "elicitation.requested" => {
+            let Some(request_id) = event.data.get("requestId").and_then(Value::as_str) else {
+                return;
+            };
+            let question = event
+                .data
+                .get("question")
+                .or_else(|| event.data.get("prompt"))
+                .or_else(|| event.data.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("Copilot needs your input.")
+                .to_string();
+            let choices = event
+                .data
+                .get("choices")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let allow_freeform = event
+                .data
+                .get("allowFreeform")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let request = PendingUserInputRequest {
+                request_id: request_id.to_string(),
+                session_id: session_id.to_string(),
+                question,
+                choices,
+                allow_freeform,
+                created_at: event.timestamp.clone(),
+            };
+            pending_user_inputs.lock().await.insert(
+                request_id.to_string(),
+                PendingUserInputState {
+                    request: request.clone(),
+                    response_tx: None,
+                },
+            );
+            let _ = session.events.send(SessionEvent {
+                id: format!("user-input-request-{request_id}"),
+                timestamp: event.timestamp.clone(),
+                event_type: "sdk.user_input_request".to_string(),
+                data: serde_json::to_value(request).unwrap_or(Value::Null),
+            });
+        }
         "permission.requested" => {
             let Some(request_id) = event.data.get("requestId").and_then(Value::as_str) else {
                 return;

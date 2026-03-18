@@ -316,6 +316,7 @@ async fn load_thread_messages(
             &workspace_path,
             Some(&thread.model),
             thread.reasoning_effort.as_deref(),
+            None,
         )
         .await
     {
