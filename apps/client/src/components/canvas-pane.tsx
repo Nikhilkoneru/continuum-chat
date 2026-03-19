@@ -101,19 +101,19 @@ export function CanvasPane({
               <MarkdownContent content={canvas.content} className="canvas-markdown" />
             </div>
           )}
-
-          {/* Floating edit FAB */}
-          {!editing ? (
-            <button type="button" className="canvas-fab" onClick={enterEditMode} aria-label="Edit document" title="Edit">
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L3.463 11.098a.25.25 0 00-.064.108l-.563 1.97 1.971-.564a.25.25 0 00.108-.064l8.61-8.61a.25.25 0 000-.354L12.427 2.487z"/></svg>
-            </button>
-          ) : null}
         </div>
       ) : (
         <div className="canvas-empty canvas-empty--editor">
           Ask the AI to use canvas, or it will open one automatically when drafting.
         </div>
       )}
+
+      {/* Floating edit FAB — outside canvas-document so it doesn't scroll */}
+      {canvas && !editing ? (
+        <button type="button" className="canvas-fab" onClick={enterEditMode} aria-label="Edit document" title="Edit">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L3.463 11.098a.25.25 0 00-.064.108l-.563 1.97 1.971-.564a.25.25 0 00.108-.064l8.61-8.61a.25.25 0 000-.354L12.427 2.487z"/></svg>
+        </button>
+      ) : null}
     </aside>
   );
 }

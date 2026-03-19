@@ -328,6 +328,7 @@ button { cursor: pointer; }
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  transition: flex 200ms ease;
 }
 
 .main-header {
@@ -356,6 +357,7 @@ button { cursor: pointer; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 360px;
 }
 
 .main-subtitle {
@@ -408,9 +410,9 @@ button { cursor: pointer; }
   color: var(--muted);
 }
 
-.mobile-menu-trigger { display: none; }
+.mobile-menu-trigger { display: none !important; }
 
-.mobile-menu-trigger--visible { display: flex; }
+.mobile-menu-trigger--visible { display: inline-flex !important; }
 
 /* ── Messages ── */
 .message-scroll {
@@ -1013,69 +1015,20 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
   flex-direction: column;
   gap: 8px;
   flex-shrink: 0;
+  max-width: 856px;
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+}
+
+/* When canvas is open the chat column is narrow — fill it */
+.main-body--with-canvas .composer {
+  max-width: none;
 }
 
 /* Tools menu anchor (inside composer-bar) */
 .composer-tools-anchor {
   position: relative;
-}
-
-/* Active tool pill above composer */
-.composer-active-tool {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px 4px 10px;
-  background: rgba(56, 139, 253, 0.08);
-  border: 1px solid rgba(56, 139, 253, 0.25);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  color: var(--text);
-  max-width: 100%;
-}
-
-.composer-active-tool svg {
-  flex-shrink: 0;
-  color: rgba(56, 139, 253, 0.8);
-}
-
-.composer-active-tool-label {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.composer-active-tool-meta {
-  color: var(--muted);
-  font-size: 0.7rem;
-  white-space: nowrap;
-}
-.composer-active-tool-meta::before {
-  content: " · ";
-}
-
-.composer-active-tool-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  border-radius: 50%;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 100ms, color 100ms;
-}
-
-.composer-active-tool-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
 }
 
 /* Tools popover menu */
@@ -1240,6 +1193,12 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
   border-left: 1px solid var(--border);
   background: var(--bg);
   position: relative;
+  animation: canvas-slide-in 200ms ease;
+}
+
+@keyframes canvas-slide-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 /* ── Canvas header: X | title | actions ── */
@@ -1316,7 +1275,6 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
   padding: 40px 56px;
   cursor: text;
   min-height: 200px;
-  overflow-y: auto;
 }
 .canvas-markdown {
   color: var(--text);
@@ -1372,6 +1330,8 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
   box-shadow: 0 2px 12px rgba(0,0,0,0.35);
   transition: background 120ms, transform 120ms;
   z-index: 5;
+  /* Stay fixed relative to canvas-pane, not scrolling content */
+  pointer-events: auto;
 }
 .canvas-fab:hover { background: var(--surface-hover); transform: scale(1.08); }
 
@@ -1735,7 +1695,7 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
     background: rgba(0, 0, 0, 0.5);
     z-index: 20;
   }
-  .mobile-menu-trigger, .sidebar-topbar { display: flex; }
+  .mobile-menu-trigger, .sidebar-topbar { display: inline-flex !important; }
   .main-header { padding: 10px 12px; }
   .message-scroll { padding: 12px; }
   .composer { padding: 8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
@@ -1758,22 +1718,19 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
 
 @media (max-width: 640px) {
   .main-header {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
   .main-header-actions {
-    width: 100%;
-    justify-content: flex-end;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .header-model-field {
-    flex: 1 1 100%;
-    justify-content: space-between;
+    flex-shrink: 0;
+    gap: 4px;
   }
   .header-model-pill {
-    flex: 1;
-    max-width: none;
-    min-width: 120px;
+    max-width: 130px;
+    font-size: 0.72rem;
+    padding: 3px 20px 3px 8px;
+  }
+  .header-model-pill--thinking {
+    max-width: 80px;
   }
   .canvas-header {
     padding: 8px 10px;
