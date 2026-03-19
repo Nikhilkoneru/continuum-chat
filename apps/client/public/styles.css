@@ -428,7 +428,7 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-width: 820px;
+  max-width: 680px;
   margin: 0 auto;
 }
 
@@ -1015,7 +1015,7 @@ details.tool-activity[open] > :not(.tool-activity-collapse-summary) {
   flex-direction: column;
   gap: 8px;
   flex-shrink: 0;
-  max-width: 856px;
+  max-width: 680px;
   margin-left: auto;
   margin-right: auto;
   width: 100%;
