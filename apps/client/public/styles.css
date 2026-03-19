@@ -314,6 +314,9 @@ button { cursor: pointer; }
 .main-body {
   min-height: 0;
   min-width: 0;
+  /* Stretch chat-column to fill available height so composer pins to bottom */
+  display: flex;
+  flex-direction: column;
 }
 
 .main-body--with-canvas {
@@ -328,7 +331,7 @@ button { cursor: pointer; }
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  transition: flex 200ms ease;
+  flex: 1;
 }
 
 .main-header {
