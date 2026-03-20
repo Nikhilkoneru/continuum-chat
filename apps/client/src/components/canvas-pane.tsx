@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, type CSSProperties } from 'react';
+
 import type { CanvasArtifact, CanvasSelection } from '../lib/types.js';
 import { MarkdownContent } from './markdown-content.js';
 
@@ -23,6 +24,91 @@ type CanvasPaneProps = {
   selectionSubmitDisabled?: boolean;
 };
 
+type InlineComposerPosition = {
+  left: number;
+  top: number;
+};
+
+const INLINE_COMPOSER_MAX_WIDTH = 320;
+const INLINE_COMPOSER_HEIGHT = 56;
+const MIRROR_STYLE_PROPERTIES = [
+  'box-sizing',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'border-top-width',
+  'border-right-width',
+  'border-bottom-width',
+  'border-left-width',
+  'font-family',
+  'font-size',
+  'font-style',
+  'font-variant',
+  'font-weight',
+  'letter-spacing',
+  'line-height',
+  'tab-size',
+  'text-indent',
+  'text-rendering',
+  'text-transform',
+  'word-spacing',
+] as const;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const getTextareaSelectionAnchor = (textarea: HTMLTextAreaElement, position: number) => {
+  if (typeof document === 'undefined' || textarea.clientWidth === 0) {
+    return null;
+  }
+
+  const computed = window.getComputedStyle(textarea);
+  const mirror = document.createElement('div');
+  mirror.setAttribute('aria-hidden', 'true');
+  mirror.style.position = 'absolute';
+  mirror.style.top = '0';
+  mirror.style.left = '-9999px';
+  mirror.style.visibility = 'hidden';
+  mirror.style.pointerEvents = 'none';
+  mirror.style.whiteSpace = 'pre-wrap';
+  mirror.style.overflowWrap = 'break-word';
+  mirror.style.wordBreak = 'break-word';
+  mirror.style.width = `${textarea.clientWidth}px`;
+
+  for (const property of MIRROR_STYLE_PROPERTIES) {
+    mirror.style.setProperty(property, computed.getPropertyValue(property));
+  }
+
+  const beforeSelection = textarea.value.slice(0, position);
+  mirror.textContent = beforeSelection;
+  if (beforeSelection.endsWith('\n')) {
+    mirror.textContent += '\u200b';
+  }
+
+  const marker = document.createElement('span');
+  marker.textContent = textarea.value.slice(position, position + 1) || '\u200b';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+
+  const anchor = {
+    left: marker.offsetLeft - textarea.scrollLeft,
+    top: marker.offsetTop - textarea.scrollTop,
+    lineHeight: Number.parseFloat(computed.lineHeight) || marker.offsetHeight || 20,
+  };
+
+  document.body.removeChild(mirror);
+  return anchor;
+};
+
+function SendSelectionIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M22 2 11 13" />
+      <path d="m22 2-7 20-4-9-9-4Z" />
+    </svg>
+  );
+}
+
 export function CanvasPane({
   canvases,
   activeCanvasId,
@@ -44,7 +130,10 @@ export function CanvasPane({
   selectionSubmitDisabled,
 }: CanvasPaneProps) {
   const [editing, setEditing] = useState(false);
+  const [inlineComposerPosition, setInlineComposerPosition] = useState<InlineComposerPosition | null>(null);
+  const canvasDocumentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const selectionComposerRef = useRef<HTMLDivElement>(null);
   const selectionPromptRef = useRef<HTMLInputElement>(null);
 
   const enterEditMode = useCallback(() => {
@@ -59,15 +148,111 @@ export function CanvasPane({
     setEditing(false);
   }, [canvas, onContentBlur]);
 
+  const updateInlineComposerPosition = useCallback(() => {
+    const textarea = editorRef.current;
+    const container = canvasDocumentRef.current;
+    if (!textarea || !container || !selection) {
+      setInlineComposerPosition(null);
+      return;
+    }
+
+    const anchor = getTextareaSelectionAnchor(textarea, selection.end);
+    if (!anchor) {
+      setInlineComposerPosition(null);
+      return;
+    }
+
+    const rawLeft = textarea.offsetLeft + anchor.left;
+    const maxLeft = Math.max(12, container.clientWidth - INLINE_COMPOSER_MAX_WIDTH - 12);
+    const left = clamp(rawLeft, 12, maxLeft);
+
+    const belowTop = textarea.offsetTop + anchor.top + anchor.lineHeight + 10;
+    const aboveTop = textarea.offsetTop + anchor.top - INLINE_COMPOSER_HEIGHT - 10;
+    const visibleTop = container.scrollTop + 12;
+    const visibleBottom = container.scrollTop + container.clientHeight - INLINE_COMPOSER_HEIGHT - 12;
+    const top = belowTop <= visibleBottom ? belowTop : Math.max(visibleTop, aboveTop);
+
+    setInlineComposerPosition({ left, top });
+  }, [selection]);
+
+  const dismissSelection = useCallback(
+    (options?: { refocusEditor?: boolean }) => {
+      onClearSelection();
+      if (options?.refocusEditor) {
+        requestAnimationFrame(() => editorRef.current?.focus());
+      }
+    },
+    [onClearSelection],
+  );
+
+  const handleEditorBlur = useCallback(() => {
+    requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (selectionComposerRef.current?.contains(activeElement)) {
+        return;
+      }
+      exitEditMode();
+    });
+  }, [exitEditMode]);
+
+  const handleInlineComposerBlur = useCallback(() => {
+    requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (selectionComposerRef.current?.contains(activeElement)) {
+        return;
+      }
+      if (activeElement === editorRef.current) {
+        return;
+      }
+      onClearSelection();
+      exitEditMode();
+    });
+  }, [exitEditMode, onClearSelection]);
+
   useEffect(() => {
     setEditing(false);
+    setInlineComposerPosition(null);
   }, [canvas?.id]);
 
   useEffect(() => {
-    if (selection) {
-      selectionPromptRef.current?.focus();
+    if (!editing || !selection) {
+      setInlineComposerPosition(null);
+      return;
     }
-  }, [selection, canvas?.id]);
+
+    updateInlineComposerPosition();
+    const textarea = editorRef.current;
+    const container = canvasDocumentRef.current;
+    if (!textarea || !container) {
+      return;
+    }
+
+    const handleViewportChange = () => updateInlineComposerPosition();
+    textarea.addEventListener('scroll', handleViewportChange);
+    container.addEventListener('scroll', handleViewportChange);
+    window.addEventListener('resize', handleViewportChange);
+    return () => {
+      textarea.removeEventListener('scroll', handleViewportChange);
+      container.removeEventListener('scroll', handleViewportChange);
+      window.removeEventListener('resize', handleViewportChange);
+    };
+  }, [canvas?.content, editing, selection, updateInlineComposerPosition]);
+
+  useEffect(() => {
+    if (!selection || !editing || !inlineComposerPosition) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      selectionPromptRef.current?.focus();
+    });
+  }, [editing, inlineComposerPosition, selection, canvas?.id]);
+
+  const inlineComposerStyle: CSSProperties | undefined = inlineComposerPosition
+    ? {
+        left: `${inlineComposerPosition.left}px`,
+        top: `${inlineComposerPosition.top}px`,
+      }
+    : undefined;
 
   return (
     <aside className="canvas-pane">
@@ -121,7 +306,7 @@ export function CanvasPane({
       ) : null}
 
       {canvas ? (
-        <div className="canvas-document">
+        <div ref={canvasDocumentRef} className="canvas-document">
           {editing ? (
             <>
               <textarea
@@ -129,7 +314,7 @@ export function CanvasPane({
                 className="canvas-editor"
                 value={canvas.content}
                 onChange={(event) => onContentChange(canvas.id, event.target.value)}
-                onBlur={() => exitEditMode()}
+                onBlur={handleEditorBlur}
                 onSelect={(event) => {
                   const target = event.currentTarget;
                   const start = target.selectionStart ?? 0;
@@ -143,9 +328,41 @@ export function CanvasPane({
                 spellCheck={canvas.kind !== 'code'}
                 aria-label={`Editing ${canvas.title}`}
               />
-              {selection ? (
-                <div className="canvas-selection-hint">
-                  {selection.end - selection.start} chars selected - use the edit bar below to update this section
+
+              {selection && inlineComposerStyle ? (
+                <div
+                  ref={selectionComposerRef}
+                  className="canvas-selection-inline"
+                  style={inlineComposerStyle}
+                >
+                  <input
+                    ref={selectionPromptRef}
+                    className="canvas-selection-inline-input"
+                    value={selectionPromptDraft}
+                    onChange={(event) => onSelectionPromptChange(event.target.value)}
+                    onBlur={handleInlineComposerBlur}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        onSubmitSelectionPrompt();
+                      } else if (event.key === 'Escape') {
+                        event.preventDefault();
+                        dismissSelection({ refocusEditor: true });
+                      }
+                    }}
+                    placeholder="Edit selected text…"
+                    aria-label={`Edit selected text in ${canvas.title}`}
+                  />
+                  <button
+                    type="button"
+                    className="canvas-selection-inline-send"
+                    onClick={onSubmitSelectionPrompt}
+                    disabled={selectionSubmitDisabled || !selectionPromptDraft.trim()}
+                    aria-label="Apply selection edit"
+                    title="Apply selection edit"
+                  >
+                    <SendSelectionIcon />
+                  </button>
                 </div>
               ) : null}
             </>
@@ -160,46 +377,6 @@ export function CanvasPane({
           Ask the assistant to create or update a canvas, then edit it here like a document.
         </div>
       )}
-
-      {selection ? (
-        <div className="canvas-selection-dock">
-          <div className="canvas-selection-dock-copy">
-            <div className="canvas-selection-dock-title">Edit selection</div>
-            <div className="canvas-selection-dock-meta">
-              {selection.end - selection.start} chars selected{canvas ? ` in ${canvas.title}` : ''}
-            </div>
-          </div>
-          <div className="canvas-selection-dock-bar">
-            <input
-              ref={selectionPromptRef}
-              className="canvas-selection-input"
-              value={selectionPromptDraft}
-              onChange={(event) => onSelectionPromptChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  onSubmitSelectionPrompt();
-                } else if (event.key === 'Escape') {
-                  event.preventDefault();
-                  onClearSelection();
-                }
-              }}
-              placeholder="How should this selection change?"
-            />
-            <button type="button" className="canvas-selection-dismiss" onClick={onClearSelection}>
-              Dismiss
-            </button>
-            <button
-              type="button"
-              className="canvas-selection-apply"
-              onClick={onSubmitSelectionPrompt}
-              disabled={selectionSubmitDisabled || !selectionPromptDraft.trim()}
-            >
-              Apply
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       {canvas && !editing ? (
         <button type="button" className="canvas-fab" onClick={enterEditMode} aria-label="Edit document" title="Edit">

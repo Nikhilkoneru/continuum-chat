@@ -47,6 +47,14 @@ const summarizeToolActivity = (activity: ChatToolActivity) => {
   return toolStatusLabels[activity.status];
 };
 
+function CanvasChipIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13ZM1 3.5a.5.5 0 0 1 .5-.5H7v10H1.5a.5.5 0 0 1-.5-.5v-9ZM8 13V3h6.5a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5H8Z" />
+    </svg>
+  );
+}
+
 export function MessageBubble({
   message,
   isStreaming,
@@ -63,9 +71,15 @@ export function MessageBubble({
   const reasoningState = message.metadata?.reasoningState as 'streaming' | 'complete' | undefined;
   const isThinking = reasoningState === 'streaming';
   const hasReasoning = Boolean(message.metadata?.reasoning);
+  const canvasEditSummary = message.metadata?.canvasEditSummary;
   const toolActivities = [...(message.metadata?.toolActivities ?? [])].sort(
     (left, right) => new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime(),
   );
+  const linkedCanvas =
+    canvasEditSummary && canvasReferences?.length
+      ? (canvasReferences.find((canvas) => canvas.id === canvasEditSummary.canvasId) ?? canvasReferences[0] ?? null)
+      : null;
+  const isLinkedCanvasActive = Boolean(linkedCanvas && isCanvasPaneOpen && activeCanvasId === linkedCanvas.id);
 
   return (
     <div className={`msg${isUser ? ' msg--user' : ''}${isError ? ' msg--error' : ''}`}>
@@ -210,7 +224,30 @@ export function MessageBubble({
           </div>
         ) : null}
 
-        {canvasReferences?.length ? (
+        {canvasEditSummary ? (
+          <div className="msg-canvas-edit-summary">
+            {linkedCanvas ? (
+              <button
+                type="button"
+                className={`msg-canvas-edit-chip msg-canvas-edit-chip--canvas${isLinkedCanvasActive ? ' msg-canvas-edit-chip--active' : ''}`}
+                onClick={() => onToggleCanvas?.(linkedCanvas.id)}
+              >
+                <CanvasChipIcon />
+                <span className="msg-canvas-edit-chip-label">{canvasEditSummary.canvasTitle}</span>
+              </button>
+            ) : (
+              <span className="msg-canvas-edit-chip msg-canvas-edit-chip--canvas">
+                <CanvasChipIcon />
+                <span className="msg-canvas-edit-chip-label">{canvasEditSummary.canvasTitle}</span>
+              </span>
+            )}
+            <span className="msg-canvas-edit-chip msg-canvas-edit-chip--selection" title={canvasEditSummary.selectedTextPreview}>
+              "{canvasEditSummary.selectedTextPreview}"
+            </span>
+          </div>
+        ) : null}
+
+        {!canvasEditSummary && canvasReferences?.length ? (
           <div className="msg-attachments">
             {canvasReferences.map((canvas) => {
               const isActiveCanvas = Boolean(isCanvasPaneOpen && activeCanvasId === canvas.id);

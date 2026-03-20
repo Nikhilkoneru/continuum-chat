@@ -276,9 +276,18 @@ export type ChatCanvasSyncEvent = {
   open?: boolean;
 };
 
+export type ChatCanvasEditSummary = {
+  canvasId?: string;
+  canvasTitle: string;
+  canvasKind?: CanvasKind | string;
+  selectedTextPreview: string;
+  selectedTextLength: number;
+};
+
 export type ChatMessageMetadata = {
   sessionMessageId?: string;
   userMessageIndex?: number;
+  canvasEditSummary?: ChatCanvasEditSummary;
   reasoning?: string;
   reasoningState?: 'streaming' | 'complete';
   usage?: ChatUsage;

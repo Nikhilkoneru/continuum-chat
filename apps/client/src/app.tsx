@@ -191,6 +191,16 @@ const mergeThreadDetailIntoLocal = (
   pendingPermissionRequests: thread.pendingPermissionRequests ?? existing?.pendingPermissionRequests ?? [],
 });
 const summarizeTitle = (prompt: string) => (prompt.length > 42 ? `${prompt.slice(0, 42)}...` : prompt);
+const summarizeSelectionPreview = (text: string, maxChars: number) => {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return '';
+  }
+  if (compact.length <= maxChars) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+};
 const trimToNull = (value: string) => {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -1246,7 +1256,11 @@ export default function App() {
     [selectedChat, updateChat],
   );
 
-  const handleSend = useCallback(async (promptOverride?: string, canvasModeOverride: 'chat' | 'create' | 'update' = 'chat') => {
+  const handleSend = useCallback(async (
+    promptOverride?: string,
+    canvasModeOverride: 'chat' | 'create' | 'update' = 'chat',
+    selectionOverride?: CanvasSelection | null,
+  ) => {
     const prompt = (promptOverride ?? draft).trim();
     if (!session || !selectedChat || !prompt || streamingChatIds.has(selectedChat.id)) {
       return;
@@ -1257,6 +1271,21 @@ export default function App() {
     const reasoningEffort = selectedChat.reasoningEffort;
     const messageAttachments = selectedChat.draftAttachments;
     const userMessageIndex = nextUserMessageIndex(selectedChat.messages);
+    const selectionForSend = canvasModeOverride === 'update' ? selectionOverride ?? canvasSelection ?? null : null;
+    const userMessageMetadata: ChatMessageMetadata = {
+      userMessageIndex,
+      ...(selectionForSend && activeCanvas
+        ? {
+            canvasEditSummary: {
+              canvasId: activeCanvas.id,
+              canvasTitle: activeCanvas.title,
+              canvasKind: activeCanvas.kind,
+              selectedTextPreview: summarizeSelectionPreview(selectionForSend.text, 40),
+              selectedTextLength: selectionForSend.text.length,
+            },
+          }
+        : {}),
+    };
 
     // Canvas context: only send if a canvas is currently open (purely as context for the LLM)
     const canvasContextForSend = canvasPaneOpen && activeCanvas
@@ -1266,7 +1295,7 @@ export default function App() {
           title: activeCanvas.title,
           kind: activeCanvas.kind,
           currentContent: activeCanvas.content,
-          selection: canvasModeOverride === 'update' ? canvasSelection ?? undefined : undefined,
+          selection: selectionForSend ?? undefined,
         }
       : undefined;
 
@@ -1356,7 +1385,7 @@ export default function App() {
       pendingPermissionRequests: [],
       messages: sortMessages([
         ...chat.messages,
-        { ...createMessageWithMetadata('user', prompt, messageAttachments, { userMessageIndex }), id: userMessageId },
+        { ...createMessageWithMetadata('user', prompt, messageAttachments, userMessageMetadata), id: userMessageId },
         { id: assistantMessageId, role: 'assistant', content: '', createdAt: new Date().toISOString(), metadata: {} },
       ]),
       hasLoadedMessages: true,
@@ -1646,8 +1675,10 @@ export default function App() {
       return;
     }
 
-    await handleSend(selectionPromptDraft, 'update');
+    const selection = canvasSelection;
+    const prompt = selectionPromptDraft.trim();
     clearCanvasSelection(selectedChat.id);
+    await handleSend(prompt, 'update', selection);
   }, [canvasSelection, clearCanvasSelection, handleSend, selectedChat, selectionPromptDraft]);
 
   const handleAbortStreaming = useCallback(async () => {
