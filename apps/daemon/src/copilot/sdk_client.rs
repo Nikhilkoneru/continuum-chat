@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 
 const MIN_SDK_PROTOCOL_VERSION: u32 = 2;
 const MAX_SDK_PROTOCOL_VERSION: u32 = 3;
@@ -286,8 +286,14 @@ impl SdkConnection {
         }
 
         let mut child = command.spawn()?;
-        let stdin = child.stdin.take().context("Copilot SDK stdin unavailable")?;
-        let stdout = child.stdout.take().context("Copilot SDK stdout unavailable")?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("Copilot SDK stdin unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Copilot SDK stdout unavailable")?;
         let stderr = child.stderr.take();
 
         if let Some(stderr) = stderr {
@@ -352,7 +358,12 @@ impl SdkConnection {
         let result = self
             .invoke(
                 "session.create",
-                Some(build_session_config(cwd, model, reasoning_effort, tool_policy)),
+                Some(build_session_config(
+                    cwd,
+                    model,
+                    reasoning_effort,
+                    tool_policy,
+                )),
             )
             .await?;
         let session_id = result
@@ -365,7 +376,8 @@ impl SdkConnection {
             .and_then(Value::as_str)
             .unwrap_or(cwd)
             .to_string();
-        self.upsert_session_record(&session_id, &working_directory).await;
+        self.upsert_session_record(&session_id, &working_directory)
+            .await;
         Ok(session_id)
     }
 
@@ -405,7 +417,8 @@ impl SdkConnection {
             .and_then(Value::as_str)
             .unwrap_or(cwd)
             .to_string();
-        self.upsert_session_record(&resumed_id, &working_directory).await;
+        self.upsert_session_record(&resumed_id, &working_directory)
+            .await;
         Ok(resumed_id)
     }
 
@@ -450,7 +463,9 @@ impl SdkConnection {
     }
 
     pub async fn get_status(&self) -> anyhow::Result<RuntimeStatus> {
-        Ok(serde_json::from_value(self.invoke("status.get", None).await?)?)
+        Ok(serde_json::from_value(
+            self.invoke("status.get", None).await?,
+        )?)
     }
 
     pub async fn get_auth_status(&self) -> anyhow::Result<AuthStatus> {
@@ -474,7 +489,10 @@ impl SdkConnection {
             .await
     }
 
-    pub async fn subscribe(&self, session_id: &str) -> anyhow::Result<broadcast::Receiver<SessionEvent>> {
+    pub async fn subscribe(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<broadcast::Receiver<SessionEvent>> {
         let sessions = self.sessions.read().await;
         let record = sessions
             .get(session_id)
@@ -518,9 +536,15 @@ impl SdkConnection {
         Ok(rx)
     }
 
-    pub async fn load_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<ReplayedMessage>> {
+    pub async fn load_session_messages(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<ReplayedMessage>> {
         let result = self
-            .invoke("session.getMessages", Some(json!({ "sessionId": session_id })))
+            .invoke(
+                "session.getMessages",
+                Some(json!({ "sessionId": session_id })),
+            )
             .await?;
         let raw_events = result
             .get("events")
@@ -548,7 +572,10 @@ impl SdkConnection {
             .map(|state| state.request.clone())
     }
 
-    pub async fn get_pending_user_input(&self, request_id: &str) -> Option<PendingUserInputRequest> {
+    pub async fn get_pending_user_input(
+        &self,
+        request_id: &str,
+    ) -> Option<PendingUserInputRequest> {
         self.pending_user_inputs
             .lock()
             .await
@@ -569,7 +596,10 @@ impl SdkConnection {
             .collect()
     }
 
-    pub async fn get_pending_permission(&self, request_id: &str) -> Option<PendingPermissionRequest> {
+    pub async fn get_pending_permission(
+        &self,
+        request_id: &str,
+    ) -> Option<PendingPermissionRequest> {
         self.pending_permissions
             .lock()
             .await
@@ -585,7 +615,11 @@ impl SdkConnection {
             .map(|state| state.request.clone())
     }
 
-    pub async fn respond_to_user_input(&self, request_id: &str, answer: &str) -> anyhow::Result<()> {
+    pub async fn respond_to_user_input(
+        &self,
+        request_id: &str,
+        answer: &str,
+    ) -> anyhow::Result<()> {
         let state = self.pending_user_inputs.lock().await.remove(request_id);
         let Some(state) = state else {
             anyhow::bail!("Copilot user input request {request_id} is no longer pending");
@@ -635,7 +669,11 @@ impl SdkConnection {
         }
     }
 
-    pub async fn respond_to_tool_call(&self, request_id: &str, result: Value) -> anyhow::Result<()> {
+    pub async fn respond_to_tool_call(
+        &self,
+        request_id: &str,
+        result: Value,
+    ) -> anyhow::Result<()> {
         let state = self.pending_tool_calls.lock().await.remove(request_id);
         let Some(state) = state else {
             anyhow::bail!("Copilot tool call request {request_id} is no longer pending");
@@ -675,7 +713,9 @@ impl SdkConnection {
     }
 
     async fn verify_protocol_version(&self) -> anyhow::Result<()> {
-        let result = self.invoke("ping", Some(json!({ "message": null }))).await?;
+        let result = self
+            .invoke("ping", Some(json!({ "message": null })))
+            .await?;
         if let Some(protocol_version) = result.get("protocolVersion").and_then(Value::as_u64) {
             let protocol_version = protocol_version as u32;
             if !(MIN_SDK_PROTOCOL_VERSION..=MAX_SDK_PROTOCOL_VERSION).contains(&protocol_version) {
@@ -928,7 +968,10 @@ async fn handle_request(
             )
             .await
         }
-        _ => Err(anyhow::anyhow!("Unsupported Copilot SDK server request: {}", request.method)),
+        _ => Err(anyhow::anyhow!(
+            "Unsupported Copilot SDK server request: {}",
+            request.method
+        )),
     };
 
     let response = match result {
@@ -1281,10 +1324,7 @@ async fn maybe_emit_v3_bridge_events(
             let Some(request_id) = event.data.get("requestId").and_then(Value::as_str) else {
                 return;
             };
-            let permission = event
-                .data
-                .get("permissionRequest")
-                .unwrap_or(&Value::Null);
+            let permission = event.data.get("permissionRequest").unwrap_or(&Value::Null);
             let tool_call_id = permission
                 .get("toolCallId")
                 .and_then(Value::as_str)
@@ -1402,13 +1442,13 @@ fn build_canvas_tools() -> Value {
         },
         {
             "name": "canvas_update",
-            "description": "Update an existing canvas artifact. When selectionReplace is true, content replaces ONLY the user-selected range; otherwise content replaces the entire document.",
+            "description": "Update an existing canvas artifact. When selectionReplace is true, content replaces ONLY the user-selected range and should match the surrounding document's structure and formatting; otherwise content replaces the entire document.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "canvasId": { "type": "string", "description": "ID of the canvas to update." },
                     "title": { "type": "string", "description": "Optional replacement title." },
-                    "content": { "type": "string", "description": "Replacement text. If selectionReplace is true this replaces only the selected range; otherwise it replaces the full document." },
+                    "content": { "type": "string", "description": "Replacement text. If selectionReplace is true this should be only the replacement text for the selected range and should fit the surrounding document; otherwise it replaces the full document." },
                     "selectionReplace": { "type": "boolean", "description": "When true, content replaces only the currently selected text range instead of the whole document." },
                     "open": { "type": "boolean", "description": "Whether the UI should keep the canvas open after updating it." }
                 },
@@ -1501,10 +1541,7 @@ async fn read_framed_message(reader: &mut BufReader<ChildStdout>) -> anyhow::Res
         if trimmed.is_empty() {
             break;
         }
-        if let Some(value) = trimmed
-            .to_ascii_lowercase()
-            .strip_prefix("content-length:")
-        {
+        if let Some(value) = trimmed.to_ascii_lowercase().strip_prefix("content-length:") {
             content_length = Some(value.trim().parse()?);
         }
     }
@@ -1579,7 +1616,9 @@ fn replay_messages_from_events(events: &[SessionEvent]) -> Vec<ReplayedMessage> 
                 if let Some(content) = event.data.get("content").and_then(Value::as_str) {
                     current_assistant_text.push_str(content);
                 }
-                if let Some(tool_requests) = event.data.get("toolRequests").and_then(Value::as_array) {
+                if let Some(tool_requests) =
+                    event.data.get("toolRequests").and_then(Value::as_array)
+                {
                     for tool_request in tool_requests {
                         upsert_tool_call(
                             &mut current_tool_calls,

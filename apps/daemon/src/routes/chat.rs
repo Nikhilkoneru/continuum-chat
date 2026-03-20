@@ -15,9 +15,8 @@ use tokio::sync::mpsc;
 
 use crate::auth_middleware::require_session;
 use crate::copilot::{
-    PendingPermissionOption, PendingPermissionRequest, PendingToolCallRequest,
-    SDK_PERMISSION_APPROVED, SDK_PERMISSION_DENIED, SendPromptInput, SessionEvent,
-    UserMessageAttachment,
+    PendingPermissionOption, PendingPermissionRequest, PendingToolCallRequest, SendPromptInput,
+    SessionEvent, UserMessageAttachment, SDK_PERMISSION_APPROVED, SDK_PERMISSION_DENIED,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -122,9 +121,10 @@ async fn abort_chat(
     Json(body): Json<AbortInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session(&headers, &state.db, &state.config).await?;
-    let thread = thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
+    let thread =
+        thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     if let Some(ref sid) = thread.copilot_session_id {
         if let Ok(conn) = state.copilot.get_or_create_connection().await {
@@ -141,9 +141,10 @@ async fn user_input(
     Json(body): Json<UserInputInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session(&headers, &state.db, &state.config).await?;
-    let thread = thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
+    let thread =
+        thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
     let session_id = thread.copilot_session_id.ok_or_else(|| {
         AppError::BadRequest("This thread does not have an active Copilot session.".into())
     })?;
@@ -179,9 +180,10 @@ async fn permission_response(
     Json(body): Json<PermissionInput>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session(&headers, &state.db, &state.config).await?;
-    let thread = thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
+    let thread =
+        thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
     let session_id = thread.copilot_session_id.ok_or_else(|| {
         AppError::BadRequest("This thread does not have an active Copilot session.".into())
     })?;
@@ -221,9 +223,10 @@ async fn stream_chat(
     Json(body): Json<ChatStreamInput>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let session = require_session(&headers, &state.db, &state.config).await?;
-    let thread = thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
+    let thread =
+        thread_store::get_thread(&state.db, &state.config, &session.user_id, &body.thread_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Thread not found.".into()))?;
 
     let prompt = body.prompt.trim().to_string();
     if prompt.is_empty() || prompt.len() > 8000 {
@@ -276,11 +279,9 @@ async fn stream_chat(
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(256);
     let state_clone = state.clone();
     let thread_id = thread.id.clone();
-    let workspace_path = workspace_store::ensure_runtime_workspace_directory(
-        &state.config,
-        &thread.workspace_path,
-    )
-    .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let workspace_path =
+        workspace_store::ensure_runtime_workspace_directory(&state.config, &thread.workspace_path)
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
     tokio::spawn(async move {
         let conn = match state_clone.copilot.get_or_create_connection().await {
@@ -316,15 +317,27 @@ async fn stream_chat(
                     (session_id, true)
                 }
                 Err(error)
-                    if crate::copilot::sdk_client::SdkConnection::is_resettable_session_error(&error) =>
+                    if crate::copilot::sdk_client::SdkConnection::is_resettable_session_error(
+                        &error,
+                    ) =>
                 {
                     let _ = thread_store::clear_thread_session(&state_clone.db, &thread_id).await;
                     match conn
-                        .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref(), None)
+                        .new_session(
+                            &workspace_path,
+                            Some(&model),
+                            reasoning_effort.as_deref(),
+                            None,
+                        )
                         .await
                     {
                         Ok(id) => {
-                            let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
+                            let _ = thread_store::update_thread_session(
+                                &state_clone.db,
+                                &thread_id,
+                                &id,
+                            )
+                            .await;
                             let _ = tx
                                 .send(Ok(make_event(
                                     &json!({ "type": "session", "sessionId": id }),
@@ -351,11 +364,17 @@ async fn stream_chat(
             }
         } else {
             match conn
-                .new_session(&workspace_path, Some(&model), reasoning_effort.as_deref(), None)
+                .new_session(
+                    &workspace_path,
+                    Some(&model),
+                    reasoning_effort.as_deref(),
+                    None,
+                )
                 .await
             {
                 Ok(id) => {
-                    let _ = thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
+                    let _ =
+                        thread_store::update_thread_session(&state_clone.db, &thread_id, &id).await;
                     let _ = tx
                         .send(Ok(make_event(
                             &json!({ "type": "session", "sessionId": id }),
@@ -486,6 +505,67 @@ async fn stream_chat(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
+const SELECTION_CONTEXT_RADIUS_CHARS: usize = 220;
+
+struct SelectionContextExcerpt {
+    before: String,
+    after: String,
+    before_truncated: bool,
+    after_truncated: bool,
+}
+
+fn char_offset_to_byte_index(input: &str, char_offset: usize) -> usize {
+    input
+        .char_indices()
+        .nth(char_offset)
+        .map(|(index, _)| index)
+        .unwrap_or(input.len())
+}
+
+fn slice_char_range(input: &str, start: usize, end: usize) -> &str {
+    let byte_start = char_offset_to_byte_index(input, start);
+    let byte_end = char_offset_to_byte_index(input, end);
+    &input[byte_start..byte_end]
+}
+
+fn build_selection_context_excerpt(
+    input: &str,
+    start: usize,
+    end: usize,
+    radius: usize,
+) -> SelectionContextExcerpt {
+    let char_count = input.chars().count();
+    let clamped_start = start.min(char_count);
+    let clamped_end = end.min(char_count).max(clamped_start);
+    let before_start = clamped_start.saturating_sub(radius);
+    let after_end = (clamped_end + radius).min(char_count);
+
+    SelectionContextExcerpt {
+        before: slice_char_range(input, before_start, clamped_start).to_string(),
+        after: slice_char_range(input, clamped_end, after_end).to_string(),
+        before_truncated: before_start > 0,
+        after_truncated: after_end < char_count,
+    }
+}
+
+fn render_context_edge(
+    text: &str,
+    truncated_start: bool,
+    truncated_end: bool,
+    empty_label: &str,
+) -> String {
+    if text.is_empty() {
+        return empty_label.to_string();
+    }
+
+    format!(
+        "{}{}{}",
+        if truncated_start { "…" } else { "" },
+        text,
+        if truncated_end { "…" } else { "" }
+    )
+}
+
 fn build_prompt_text(prompt: &str, canvas: Option<&CanvasPromptContext>) -> String {
     build_canvas_prompt(prompt, canvas)
 }
@@ -514,17 +594,42 @@ User request:\n{prompt}"
         ),
         "update" => {
             if let Some(selection) = canvas.selection.as_ref() {
+                let local_context = build_selection_context_excerpt(
+                    current_content,
+                    selection.start,
+                    selection.end,
+                    SELECTION_CONTEXT_RADIUS_CHARS,
+                );
+                let before_context = render_context_edge(
+                    &local_context.before,
+                    local_context.before_truncated,
+                    false,
+                    "(start of document)",
+                );
+                let after_context = render_context_edge(
+                    &local_context.after,
+                    false,
+                    local_context.after_truncated,
+                    "(end of document)",
+                );
+
                 format!(
                     "The user wants to edit the selected portion of a {kind} canvas titled \"{title}\"{identifier}.\n\
-Current canvas content:\n<<<CANVAS\n{current_content}\nCANVAS\n\n\
-Selected range (character offsets {start}–{end}):\n<<<SELECTION\n{selection_text}\nSELECTION\n\n\
-IMPORTANT: Call `canvas_update` with `selectionReplace: true` and set `content` to ONLY the replacement text for the selected range. \
-Do NOT send the full document — the backend will splice your replacement into the original at the selection boundaries.\n\
-If you also reply in chat, keep it brief and do not repeat the content inline.\n\n\
-User request:\n{prompt}",
+                    Current canvas content:\n<<<CANVAS\n{current_content}\nCANVAS\n\n\
+                    Immediate surrounding context for the selected range:\n<<<BEFORE\n{before_context}\nBEFORE\n\
+                    <<<SELECTION\n{selection_text}\nSELECTION\n\
+                    <<<AFTER\n{after_context}\nAFTER\n\n\
+                    Selected range (character offsets {start}–{end}).\n\n\
+                    IMPORTANT: Treat the current canvas content as the source of truth for tone, formatting, markdown structure, indentation, heading/list/code conventions, and surrounding context unless the user explicitly asks to change them.\n\
+                    IMPORTANT: Call `canvas_update` with `selectionReplace: true` and set `content` to ONLY the replacement text for the selected range. Your replacement must fit seamlessly between the BEFORE and AFTER context. \
+                    Do NOT send the full document, wrapper markup, or any explanation — the backend will splice your replacement into the original at the selection boundaries.\n\
+                    If you also reply in chat, keep it brief and do not repeat the content inline.\n\n\
+                    User request:\n{prompt}",
+                    before_context = before_context,
                     start = selection.start,
                     end = selection.end,
-                    selection_text = selection.text
+                    selection_text = selection.text,
+                    after_context = after_context,
                 )
             } else {
                 format!(
@@ -603,7 +708,11 @@ async fn process_event(
                 .unwrap_or_default()
                 .to_string();
             streamed_message_ids.insert(message_id);
-            if let Some(text) = event.data.get("deltaContent").and_then(|value| value.as_str()) {
+            if let Some(text) = event
+                .data
+                .get("deltaContent")
+                .and_then(|value| value.as_str())
+            {
                 streamed_content.push_str(&text);
                 let _ = tx
                     .send(Ok(make_event(&json!({ "type": "chunk", "delta": text }))))
@@ -633,7 +742,11 @@ async fn process_event(
                 .unwrap_or_default()
                 .to_string();
             streamed_reasoning_ids.insert(reasoning_id);
-            if let Some(text) = event.data.get("deltaContent").and_then(|value| value.as_str()) {
+            if let Some(text) = event
+                .data
+                .get("deltaContent")
+                .and_then(|value| value.as_str())
+            {
                 streamed_reasoning.push_str(text);
                 let _ = tx
                     .send(Ok(make_event(
@@ -746,21 +859,31 @@ async fn process_event(
                 .await;
         }
         "sdk.permission_request" => {
-            let Ok(request) = serde_json::from_value::<PendingPermissionRequest>(event.data.clone()) else {
+            let Ok(request) =
+                serde_json::from_value::<PendingPermissionRequest>(event.data.clone())
+            else {
                 return false;
             };
-            let approval_mode = match preferences_store::get_preferences(&state.db, &state.config).await {
-                Ok(prefs) => prefs.approval_mode,
-                Err(error) => {
-                    let _ = tx.send(Ok(make_event(&json!({
-                        "type": "error",
-                        "message": format!("Failed to load approval preferences: {error}")
-                    })))).await;
-                    return false;
-                }
-            };
-            if let Some((option_id, decision, reason)) = auto_decide_permission(&request, &approval_mode) {
-                match conn.respond_to_permission_request(&request.request_id, &option_id).await {
+            let approval_mode =
+                match preferences_store::get_preferences(&state.db, &state.config).await {
+                    Ok(prefs) => prefs.approval_mode,
+                    Err(error) => {
+                        let _ = tx
+                            .send(Ok(make_event(&json!({
+                                "type": "error",
+                                "message": format!("Failed to load approval preferences: {error}")
+                            }))))
+                            .await;
+                        return false;
+                    }
+                };
+            if let Some((option_id, decision, reason)) =
+                auto_decide_permission(&request, &approval_mode)
+            {
+                match conn
+                    .respond_to_permission_request(&request.request_id, &option_id)
+                    .await
+                {
                     Ok(()) => {
                         let _ = tx.send(Ok(make_event(&json!({
                             "type": "tool_event",
@@ -790,7 +913,8 @@ async fn process_event(
             }
         }
         "sdk.tool_call_request" => {
-            let Ok(request) = serde_json::from_value::<PendingToolCallRequest>(event.data.clone()) else {
+            let Ok(request) = serde_json::from_value::<PendingToolCallRequest>(event.data.clone())
+            else {
                 return false;
             };
             if request.session_id == session_id {
@@ -813,7 +937,9 @@ async fn process_event(
                 .and_then(|value| value.as_str())
                 .unwrap_or("Response stopped.");
             let _ = tx
-                .send(Ok(make_event(&json!({ "type": "aborted", "message": message }))))
+                .send(Ok(make_event(
+                    &json!({ "type": "aborted", "message": message }),
+                )))
                 .await;
             return true;
         }
@@ -824,7 +950,9 @@ async fn process_event(
                 .and_then(|value| value.as_str())
                 .unwrap_or("Copilot request failed.");
             let _ = tx
-                .send(Ok(make_event(&json!({ "type": "error", "message": message }))))
+                .send(Ok(make_event(
+                    &json!({ "type": "error", "message": message }),
+                )))
                 .await;
             return true;
         }
@@ -854,25 +982,25 @@ async fn handle_canvas_tool_call(
     request: &PendingToolCallRequest,
 ) {
     let result = match request.tool_name.as_str() {
-        "canvas.create" | "canvas_create" => handle_canvas_create_tool(
-            state,
-            tx,
-            thread_id,
-            source_user_message_index,
-            request,
-        )
-        .await,
-        "canvas.update" | "canvas_update" => handle_canvas_update_tool(
-            state,
-            tx,
-            thread_id,
-            source_user_message_index,
-            canvas_context,
-            request,
-        )
-        .await,
+        "canvas.create" | "canvas_create" => {
+            handle_canvas_create_tool(state, tx, thread_id, source_user_message_index, request)
+                .await
+        }
+        "canvas.update" | "canvas_update" => {
+            handle_canvas_update_tool(
+                state,
+                tx,
+                thread_id,
+                source_user_message_index,
+                canvas_context,
+                request,
+            )
+            .await
+        }
         "canvas.list" | "canvas_list" => handle_canvas_list_tool(state, tx, thread_id).await,
-        "canvas.open" | "canvas_open" => handle_canvas_open_tool(state, tx, thread_id, request).await,
+        "canvas.open" | "canvas_open" => {
+            handle_canvas_open_tool(state, tx, thread_id, request).await
+        }
         "canvas.close" | "canvas_close" => handle_canvas_close_tool(state, tx, thread_id).await,
         _ => Ok(tool_failure_result(
             format!("Unsupported tool '{}'", request.tool_name),
@@ -888,7 +1016,10 @@ async fn handle_canvas_tool_call(
         ),
     };
 
-    if let Err(error) = conn.respond_to_tool_call(&request.request_id, response).await {
+    if let Err(error) = conn
+        .respond_to_tool_call(&request.request_id, response)
+        .await
+    {
         let _ = tx
             .send(Ok(make_event(&json!({
                 "type": "error",
@@ -917,8 +1048,14 @@ async fn handle_canvas_create_tool(
         source_user_message_index,
     )
     .await?;
-    emit_canvas_sync(tx, &state.db, thread_id, Some(canvas.id.as_str()), args.open.or(Some(true)))
-        .await?;
+    emit_canvas_sync(
+        tx,
+        &state.db,
+        thread_id,
+        Some(canvas.id.as_str()),
+        args.open.or(Some(true)),
+    )
+    .await?;
     Ok(tool_success_result(format!(
         "Created canvas \"{}\" (id: {}).",
         canvas.title, canvas.id
@@ -953,9 +1090,14 @@ async fn handle_canvas_update_tool(
                 let start = sel.start.min(char_count);
                 let end = sel.end.min(char_count).max(start);
                 // Convert char offsets to byte offsets for string slicing
-                let byte_start = base.char_indices().nth(start).map(|(i, _)| i).unwrap_or(base.len());
-                let byte_end = base.char_indices().nth(end).map(|(i, _)| i).unwrap_or(base.len());
-                format!("{}{}{}", &base[..byte_start], args.content, &base[byte_end..])
+                let byte_start = char_offset_to_byte_index(base, start);
+                let byte_end = char_offset_to_byte_index(base, end);
+                format!(
+                    "{}{}{}",
+                    &base[..byte_start],
+                    args.content,
+                    &base[byte_end..]
+                )
             } else {
                 // No base content available — fall back to full replacement
                 args.content.clone()
@@ -1146,9 +1288,7 @@ fn auto_decide_permission(
     None
 }
 
-fn preferred_allow_option(
-    options: &[PendingPermissionOption],
-) -> Option<&PendingPermissionOption> {
+fn preferred_allow_option(options: &[PendingPermissionOption]) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_allow_kind).unwrap_or(false))
@@ -1160,9 +1300,7 @@ fn preferred_allow_option(
         .or_else(|| options.first())
 }
 
-fn safe_allow_option(
-    options: &[PendingPermissionOption],
-) -> Option<&PendingPermissionOption> {
+fn safe_allow_option(options: &[PendingPermissionOption]) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_allow_kind).unwrap_or(false))
@@ -1173,9 +1311,7 @@ fn safe_allow_option(
         })
 }
 
-fn preferred_deny_option(
-    options: &[PendingPermissionOption],
-) -> Option<&PendingPermissionOption> {
+fn preferred_deny_option(options: &[PendingPermissionOption]) -> Option<&PendingPermissionOption> {
     options
         .iter()
         .find(|option| option.kind.as_deref().map(is_reject_kind).unwrap_or(false))
@@ -1247,4 +1383,58 @@ fn extract_usage_from_event(data: &serde_json::Value) -> Option<serde_json::Valu
         "cacheWriteTokens": usage.get("cacheWriteTokens").or_else(|| usage.get("cache_write_tokens")).and_then(|value| value.as_u64()),
         "duration": usage.get("duration").and_then(|value| value.as_u64()),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_canvas_prompt, build_selection_context_excerpt, CanvasPromptContext,
+        CanvasSelectionInput,
+    };
+
+    fn char_range_for(content: &str, selected: &str) -> (usize, usize) {
+        let byte_start = content
+            .find(selected)
+            .expect("selected text should exist in the content");
+        let start = content[..byte_start].chars().count();
+        let end = start + selected.chars().count();
+        (start, end)
+    }
+
+    #[test]
+    fn selection_update_prompt_keeps_full_document_and_style_guidance() {
+        let current_content = "## Shopping list\n\n- apples\n- bananas\n- carrots\n";
+        let selected_text = "- bananas";
+        let (start, end) = char_range_for(current_content, selected_text);
+        let canvas = CanvasPromptContext {
+            mode: "update".to_string(),
+            canvas_id: Some("canvas-1".to_string()),
+            title: Some("Shopping".to_string()),
+            kind: Some("document".to_string()),
+            current_content: Some(current_content.to_string()),
+            selection: Some(CanvasSelectionInput {
+                start,
+                end,
+                text: selected_text.to_string(),
+            }),
+        };
+
+        let prompt = build_canvas_prompt("Make it more formal.", Some(&canvas));
+
+        assert!(prompt.contains("Current canvas content:\n<<<CANVAS\n## Shopping list"));
+        assert!(prompt.contains("Immediate surrounding context for the selected range:"));
+        assert!(prompt.contains("Treat the current canvas content as the source of truth"));
+        assert!(prompt.contains("fit seamlessly between the BEFORE and AFTER context"));
+        assert!(prompt.contains("ONLY the replacement text for the selected range"));
+    }
+
+    #[test]
+    fn selection_context_excerpt_uses_character_offsets() {
+        let excerpt = build_selection_context_excerpt("aa🙂bbccdd", 2, 4, 2);
+
+        assert_eq!(excerpt.before, "aa");
+        assert_eq!(excerpt.after, "bc");
+        assert!(!excerpt.before_truncated);
+        assert!(excerpt.after_truncated);
+    }
 }
