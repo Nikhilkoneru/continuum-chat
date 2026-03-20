@@ -1442,15 +1442,14 @@ fn build_canvas_tools() -> Value {
         },
         {
             "name": "canvas_update",
-            "description": "Update an existing canvas artifact. When selectionReplace is true, content replaces ONLY the user-selected range and should match the surrounding document's structure and formatting; otherwise content replaces the entire document.",
+            "description": "Update an existing canvas artifact. Keep the canvas open after updates; use canvas_close separately only when the user explicitly wants it closed. When selectionReplace is true, content replaces ONLY the user-selected range and should match the surrounding document's structure and formatting; otherwise content replaces the entire document.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "canvasId": { "type": "string", "description": "ID of the canvas to update." },
                     "title": { "type": "string", "description": "Optional replacement title." },
                     "content": { "type": "string", "description": "Replacement text. If selectionReplace is true this should be only the replacement text for the selected range and should fit the surrounding document; otherwise it replaces the full document." },
-                    "selectionReplace": { "type": "boolean", "description": "When true, content replaces only the currently selected text range instead of the whole document." },
-                    "open": { "type": "boolean", "description": "Whether the UI should keep the canvas open after updating it." }
+                    "selectionReplace": { "type": "boolean", "description": "When true, content replaces only the currently selected text range instead of the whole document." }
                 },
                 "required": ["content"]
             },

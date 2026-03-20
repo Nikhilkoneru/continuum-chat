@@ -105,8 +105,6 @@ struct CanvasUpdateToolArgs {
     content: String,
     #[serde(default)]
     selection_replace: Option<bool>,
-    #[serde(default)]
-    open: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -570,6 +568,10 @@ fn build_prompt_text(prompt: &str, canvas: Option<&CanvasPromptContext>) -> Stri
     build_canvas_prompt(prompt, canvas)
 }
 
+fn canvas_update_sync_open_state() -> Option<bool> {
+    Some(true)
+}
+
 fn build_canvas_prompt(prompt: &str, canvas: Option<&CanvasPromptContext>) -> String {
     let Some(canvas) = canvas else {
         return prompt.to_string();
@@ -622,6 +624,7 @@ User request:\n{prompt}"
                     Selected range (character offsets {start}–{end}).\n\n\
                     IMPORTANT: Treat the current canvas content as the source of truth for tone, formatting, markdown structure, indentation, heading/list/code conventions, and surrounding context unless the user explicitly asks to change them.\n\
                     IMPORTANT: Call `canvas_update` with `selectionReplace: true` and set `content` to ONLY the replacement text for the selected range. Your replacement must fit seamlessly between the BEFORE and AFTER context. \
+                    Do not close the canvas as part of this update; the edited canvas should remain open after the tool call.\n\
                     Do NOT send the full document, wrapper markup, or any explanation — the backend will splice your replacement into the original at the selection boundaries.\n\
                     If you also reply in chat, keep it brief and do not repeat the content inline.\n\n\
                     User request:\n{prompt}",
@@ -1125,7 +1128,7 @@ async fn handle_canvas_update_tool(
         &state.db,
         thread_id,
         Some(canvas.id.as_str()),
-        args.open.or(Some(true)),
+        canvas_update_sync_open_state(),
     )
     .await?;
     Ok(tool_success_result(format!(
@@ -1388,8 +1391,8 @@ fn extract_usage_from_event(data: &serde_json::Value) -> Option<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        build_canvas_prompt, build_selection_context_excerpt, CanvasPromptContext,
-        CanvasSelectionInput,
+        build_canvas_prompt, build_selection_context_excerpt, canvas_update_sync_open_state,
+        CanvasPromptContext, CanvasSelectionInput,
     };
 
     fn char_range_for(content: &str, selected: &str) -> (usize, usize) {
@@ -1426,6 +1429,7 @@ mod tests {
         assert!(prompt.contains("Treat the current canvas content as the source of truth"));
         assert!(prompt.contains("fit seamlessly between the BEFORE and AFTER context"));
         assert!(prompt.contains("ONLY the replacement text for the selected range"));
+        assert!(prompt.contains("should remain open after the tool call"));
     }
 
     #[test]
@@ -1436,5 +1440,10 @@ mod tests {
         assert_eq!(excerpt.after, "bc");
         assert!(!excerpt.before_truncated);
         assert!(excerpt.after_truncated);
+    }
+
+    #[test]
+    fn canvas_updates_always_keep_the_canvas_open() {
+        assert_eq!(canvas_update_sync_open_state(), Some(true));
     }
 }
