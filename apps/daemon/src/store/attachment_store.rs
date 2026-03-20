@@ -24,6 +24,7 @@ pub struct AttachmentSummary {
 #[derive(Clone)]
 pub struct MessageAttachmentSet {
     pub user_message_index: usize,
+    pub copilot_session_id: Option<String>,
     pub attachments: Vec<AttachmentSummary>,
 }
 
@@ -151,6 +152,7 @@ pub async fn save_message_attachments(
     db: &Database,
     thread_id: &str,
     user_message_index: usize,
+    copilot_session_id: Option<&str>,
     attachment_ids: &[String],
 ) -> anyhow::Result<()> {
     if attachment_ids.is_empty() {
@@ -170,6 +172,7 @@ pub async fn save_message_attachments(
         id: Set(set_id.clone()),
         thread_id: Set(thread_id.to_string()),
         user_message_index: Set(user_message_index as i64),
+        copilot_session_id: Set(copilot_session_id.map(str::to_string)),
         created_at: Set(now),
     }
     .insert(&txn)
@@ -192,9 +195,18 @@ pub async fn save_message_attachments(
 pub async fn list_message_attachments(
     db: &Database,
     thread_id: &str,
+    current_copilot_session_id: Option<&str>,
 ) -> anyhow::Result<Vec<MessageAttachmentSet>> {
+    let Some(current_copilot_session_id) = current_copilot_session_id else {
+        return Ok(Vec::new());
+    };
+
     let sets = message_attachment_sets::Entity::find()
         .filter(message_attachment_sets::Column::ThreadId.eq(thread_id.to_string()))
+        .filter(
+            message_attachment_sets::Column::CopilotSessionId
+                .eq(current_copilot_session_id.to_string()),
+        )
         .order_by_asc(message_attachment_sets::Column::UserMessageIndex)
         .order_by_asc(message_attachment_sets::Column::CreatedAt)
         .all(db.connection())
@@ -203,9 +215,7 @@ pub async fn list_message_attachments(
     let mut result = Vec::with_capacity(sets.len());
     for set in sets {
         let items = message_attachment_set_items::Entity::find()
-            .filter(
-                message_attachment_set_items::Column::MessageAttachmentSetId.eq(set.id.clone()),
-            )
+            .filter(message_attachment_set_items::Column::MessageAttachmentSetId.eq(set.id.clone()))
             .order_by_asc(message_attachment_set_items::Column::Position)
             .all(db.connection())
             .await?;
@@ -238,6 +248,7 @@ pub async fn list_message_attachments(
 
         result.push(MessageAttachmentSet {
             user_message_index: set.user_message_index as usize,
+            copilot_session_id: set.copilot_session_id,
             attachments: attachment_ids
                 .iter()
                 .filter_map(|attachment_id| attachments_by_id.get(attachment_id).cloned())
@@ -246,4 +257,100 @@ pub async fn list_message_attachments(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{list_message_attachments, save_attachment, save_message_attachments};
+
+    #[tokio::test]
+    async fn session_reset_hides_old_attachment_mappings_from_the_new_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::config::test_config(temp.path());
+        let db = crate::db::Database::open(&config).await.unwrap();
+        crate::store::auth_store::create_local_session(&db, &config)
+            .await
+            .unwrap();
+
+        let thread = crate::store::thread_store::create_thread(
+            &db,
+            &config,
+            &config.daemon_owner_id,
+            &config.default_model,
+            None,
+            Some("Attachment test"),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("thread should be created");
+
+        let old_attachment = save_attachment(
+            &db,
+            &config.media_root,
+            &config.daemon_owner_id,
+            Some(thread.id.as_str()),
+            "old.txt",
+            "text/plain",
+            b"old",
+        )
+        .await
+        .unwrap();
+        let new_attachment = save_attachment(
+            &db,
+            &config.media_root,
+            &config.daemon_owner_id,
+            Some(thread.id.as_str()),
+            "new.txt",
+            "text/plain",
+            b"new",
+        )
+        .await
+        .unwrap();
+
+        save_message_attachments(
+            &db,
+            &thread.id,
+            0,
+            Some("session-old"),
+            std::slice::from_ref(&old_attachment.id),
+        )
+        .await
+        .unwrap();
+
+        let hidden_old_attachments = list_message_attachments(&db, &thread.id, Some("session-new"))
+            .await
+            .unwrap();
+        assert!(
+            hidden_old_attachments.is_empty(),
+            "old-session attachment mappings should not replay into a reset session"
+        );
+
+        save_message_attachments(
+            &db,
+            &thread.id,
+            1,
+            Some("session-new"),
+            std::slice::from_ref(&new_attachment.id),
+        )
+        .await
+        .unwrap();
+
+        let attachments = list_message_attachments(&db, &thread.id, Some("session-new"))
+            .await
+            .unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].user_message_index, 1);
+        assert_eq!(
+            attachments[0].copilot_session_id.as_deref(),
+            Some("session-new")
+        );
+        assert_eq!(attachments[0].attachments[0].id, new_attachment.id);
+
+        let no_session_attachments = list_message_attachments(&db, &thread.id, None)
+            .await
+            .unwrap();
+        assert!(no_session_attachments.is_empty());
+    }
 }

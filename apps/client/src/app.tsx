@@ -44,6 +44,7 @@ import {
 } from './lib/api.js';
 import { clearApiUrlOverride, getApiUrlOverride, getDefaultApiUrl, setApiUrlOverride } from './lib/api-config.js';
 import {
+  getWorkspaceStoreState,
   getThreadCanvasState,
   getWorkspacePaneMode,
   INITIAL_CANVAS_EDITOR_SESSION_STATE,
@@ -71,6 +72,8 @@ type BeforeInstallPromptEvent = Event & {
 type IOSNavigator = Navigator & {
   standalone?: boolean;
 };
+
+type ChatSendOutcome = 'completed' | 'failed' | 'aborted' | 'skipped';
 
 const createId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const digestEncoder = new TextEncoder();
@@ -353,6 +356,7 @@ export default function App() {
   const upsertCanvasForThread = useWorkspaceStore((state) => state.upsertCanvasForThread);
   const patchCanvasForThread = useWorkspaceStore((state) => state.patchCanvasForThread);
   const applyCanvasSync = useWorkspaceStore((state) => state.applyCanvasSync);
+  const allowRemoteCanvasOpen = useWorkspaceStore((state) => state.allowRemoteCanvasOpen);
   const openCanvas = useWorkspaceStore((state) => state.openCanvas);
   const closeCanvas = useWorkspaceStore((state) => state.closeCanvas);
   const setActiveCanvas = useWorkspaceStore((state) => state.setActiveCanvas);
@@ -401,6 +405,8 @@ export default function App() {
   const toolsMenuRef = useRef<HTMLDivElement>(null);
   const [savingCanvasId, setSavingCanvasId] = useState<string | null>(null);
   const persistCanvasTimersRef = useRef<Map<string, number>>(new Map());
+  const persistCanvasAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const persistCanvasVersionsRef = useRef<Map<string, number>>(new Map());
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -710,20 +716,35 @@ export default function App() {
     return () => media.removeListener(handleChange);
   }, []);
 
+  const getCanvasPersistKey = useCallback((threadId: string, canvasId: string) => `${threadId}:${canvasId}`, []);
+
   const cancelCanvasPersist = useCallback((threadId: string, canvasId: string) => {
-    const key = `${threadId}:${canvasId}`;
+    const key = getCanvasPersistKey(threadId, canvasId);
     const timeoutId = persistCanvasTimersRef.current.get(key);
     if (timeoutId !== undefined) {
       window.clearTimeout(timeoutId);
       persistCanvasTimersRef.current.delete(key);
     }
-  }, []);
+
+    persistCanvasVersionsRef.current.set(key, (persistCanvasVersionsRef.current.get(key) ?? 0) + 1);
+
+    const controller = persistCanvasAbortControllersRef.current.get(key);
+    if (controller) {
+      controller.abort();
+      persistCanvasAbortControllersRef.current.delete(key);
+    }
+  }, [getCanvasPersistKey]);
 
   useEffect(() => () => {
     for (const timeoutId of persistCanvasTimersRef.current.values()) {
       window.clearTimeout(timeoutId);
     }
     persistCanvasTimersRef.current.clear();
+    for (const controller of persistCanvasAbortControllersRef.current.values()) {
+      controller.abort();
+    }
+    persistCanvasAbortControllersRef.current.clear();
+    persistCanvasVersionsRef.current.clear();
   }, []);
 
   // Close tools menu on outside click
@@ -1134,11 +1155,18 @@ export default function App() {
   }, [patchCanvasForThread, selectedChat]);
 
   const persistCanvasContent = useCallback(
-    async (threadId: string, canvasId: string, title: string, content: string) => {
+    async (threadId: string, canvasId: string, title: string, content: string, persistVersion: number) => {
       if (!session || !canvasId || !title.trim()) {
         return;
       }
 
+      const key = getCanvasPersistKey(threadId, canvasId);
+      if ((persistCanvasVersionsRef.current.get(key) ?? 0) !== persistVersion) {
+        return;
+      }
+
+      const controller = new AbortController();
+      persistCanvasAbortControllersRef.current.set(key, controller);
       setSavingCanvasId(canvasId);
       setError(null);
       try {
@@ -1147,34 +1175,48 @@ export default function App() {
           canvasId,
           { title: title.trim(), content },
           session.sessionToken,
+          { signal: controller.signal },
         );
-        upsertCanvasForThread(threadId, payload.canvas);
+        if ((persistCanvasVersionsRef.current.get(key) ?? 0) !== persistVersion) {
+          return;
+        }
+        upsertCanvasForThread(threadId, payload.canvas, {
+          activate: false,
+          preservePaneState: true,
+        });
       } catch (canvasError) {
+        if (controller.signal.aborted || (persistCanvasVersionsRef.current.get(key) ?? 0) !== persistVersion) {
+          return;
+        }
         setError(canvasError instanceof Error ? canvasError.message : 'Unable to save canvas.');
       } finally {
-        setSavingCanvasId((current) => (current === canvasId ? null : current));
+        if (persistCanvasAbortControllersRef.current.get(key) === controller) {
+          persistCanvasAbortControllersRef.current.delete(key);
+          setSavingCanvasId((current) => (current === canvasId ? null : current));
+        }
       }
     },
-    [session, upsertCanvasForThread],
+    [getCanvasPersistKey, session, upsertCanvasForThread],
   );
 
   const scheduleCanvasPersist = useCallback(
     (threadId: string, canvasId: string, title: string, content: string) => {
       cancelCanvasPersist(threadId, canvasId);
+      const key = getCanvasPersistKey(threadId, canvasId);
+      const persistVersion = persistCanvasVersionsRef.current.get(key) ?? 0;
 
       if (typeof window === 'undefined') {
-        void persistCanvasContent(threadId, canvasId, title, content);
+        void persistCanvasContent(threadId, canvasId, title, content, persistVersion);
         return;
       }
 
-      const key = `${threadId}:${canvasId}`;
       const timeoutId = window.setTimeout(() => {
         persistCanvasTimersRef.current.delete(key);
-        void persistCanvasContent(threadId, canvasId, title, content);
+        void persistCanvasContent(threadId, canvasId, title, content, persistVersion);
       }, 700);
       persistCanvasTimersRef.current.set(key, timeoutId);
     },
-    [cancelCanvasPersist, persistCanvasContent],
+    [cancelCanvasPersist, getCanvasPersistKey, persistCanvasContent],
   );
 
   const handleCanvasContentChange = useCallback((canvasId: string, content: string) => {
@@ -1317,10 +1359,10 @@ export default function App() {
     promptOverride?: string,
     canvasModeOverride: 'chat' | 'create' | 'update' = 'chat',
     selectionOverride?: CanvasSelection | null,
-  ) => {
+  ): Promise<ChatSendOutcome> => {
     const prompt = (promptOverride ?? draft).trim();
     if (!session || !selectedChat || !prompt || streamingChatIds.has(selectedChat.id)) {
-      return;
+      return 'skipped';
     }
 
     const chatId = selectedChat.id;
@@ -1361,10 +1403,13 @@ export default function App() {
     let nextReplayMessageIndex = selectedChat.messages.length;
     const userMessageId = createReplayMessageId(chatId, nextReplayMessageIndex++);
     let assistantMessageId = createReplayMessageId(chatId, nextReplayMessageIndex++);
+    const liveMessageIds = new Set<string>([userMessageId, assistantMessageId]);
     let pendingDelta = '';
     let pendingReasoningDelta = '';
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let splitAssistantMessageOnNextText = false;
+
+    allowRemoteCanvasOpen(chatId);
 
     const ensureStreamingAssistantMessage = () => {
       if (!splitAssistantMessageOnNextText) {
@@ -1372,6 +1417,7 @@ export default function App() {
       }
 
       assistantMessageId = createReplayMessageId(chatId, nextReplayMessageIndex++);
+      liveMessageIds.add(assistantMessageId);
       splitAssistantMessageOnNextText = false;
       updateChat(chatId, (chat) => ({
         ...chat,
@@ -1461,7 +1507,17 @@ export default function App() {
         session.sessionToken,
         (event) => {
           if (event.type === 'session') {
-            updateChat(chatId, (chat) => ({ ...chat, copilotSessionId: event.sessionId }));
+            updateChat(chatId, (chat) => {
+              if (chat.copilotSessionId && chat.copilotSessionId !== event.sessionId) {
+                return {
+                  ...chat,
+                  copilotSessionId: event.sessionId,
+                  messages: sortMessages(chat.messages.filter((message) => liveMessageIds.has(message.id))),
+                  hasLoadedMessages: false,
+                };
+              }
+              return { ...chat, copilotSessionId: event.sessionId };
+            });
             return;
           }
           if (event.type === 'chunk') {
@@ -1714,6 +1770,16 @@ export default function App() {
         return next;
       });
     }
+
+    if (didFail) {
+      return 'failed';
+    }
+
+    if (didAbort) {
+      return 'aborted';
+    }
+
+    return 'completed';
   }, [
     activeCanvas,
     canvasPaneOpen,
@@ -1721,6 +1787,7 @@ export default function App() {
     defaultModel,
     draft,
     applyCanvasSync,
+    allowRemoteCanvasOpen,
     cancelCanvasPersist,
     selectedChat,
     session,
@@ -1734,17 +1801,23 @@ export default function App() {
       return;
     }
 
+    const threadId = selectedChat.id;
+    const canvasId = activeCanvas.id;
     const selection = canvasSelection;
     const prompt = selectionPromptDraft.trim();
-    cancelCanvasPersist(selectedChat.id, activeCanvas.id);
-    setCanvasPendingRemoteApply(selectedChat.id, activeCanvas.id, true);
-    clearCanvasSelection(selectedChat.id, activeCanvas.id);
+    cancelCanvasPersist(threadId, canvasId);
+    setCanvasPendingRemoteApply(threadId, canvasId, true);
     await handleSend(prompt, 'update', selection);
+
+    const currentThreadCanvasState = getThreadCanvasState(getWorkspaceStoreState(), threadId);
+    const currentEditorSession = currentThreadCanvasState.editorSessions[canvasId] ?? INITIAL_CANVAS_EDITOR_SESSION_STATE;
+    if (currentEditorSession.pendingRemoteApply) {
+      setCanvasPendingRemoteApply(threadId, canvasId, false);
+    }
   }, [
     activeCanvas,
     cancelCanvasPersist,
     canvasSelection,
-    clearCanvasSelection,
     handleSend,
     selectedChat,
     selectionPromptDraft,

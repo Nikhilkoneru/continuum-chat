@@ -88,11 +88,14 @@ CREATE TABLE IF NOT EXISTS message_attachment_sets (
   id TEXT PRIMARY KEY,
   thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
   user_message_index INTEGER NOT NULL,
+  copilot_session_id TEXT,
   created_at TEXT NOT NULL,
   UNIQUE(thread_id, user_message_index)
 );
 CREATE INDEX IF NOT EXISTS idx_message_attachment_sets_thread
   ON message_attachment_sets(thread_id, user_message_index);
+CREATE INDEX IF NOT EXISTS idx_message_attachment_sets_thread_session
+  ON message_attachment_sets(thread_id, copilot_session_id, user_message_index);
 
 CREATE TABLE IF NOT EXISTS message_attachment_set_items (
   message_attachment_set_id TEXT NOT NULL REFERENCES message_attachment_sets(id) ON DELETE CASCADE,
@@ -108,7 +111,9 @@ CREATE TABLE IF NOT EXISTS canvases (
   kind TEXT NOT NULL,
   content TEXT NOT NULL,
   created_by_user_message_index INTEGER,
+  created_by_copilot_session_id TEXT,
   last_updated_by_user_message_index INTEGER,
+  last_updated_by_copilot_session_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -121,6 +126,7 @@ CREATE TABLE IF NOT EXISTS canvas_revisions (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   source_user_message_index INTEGER,
+  source_copilot_session_id TEXT,
   UNIQUE(canvas_id, revision_number)
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_revisions_canvas

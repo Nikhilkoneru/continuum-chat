@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 use crate::auth_middleware::require_session;
+use crate::canvas_selection::build_selection_context_excerpt;
 use crate::copilot::{
     PendingPermissionOption, PendingPermissionRequest, PendingToolCallRequest, SendPromptInput,
     SessionEvent, UserMessageAttachment, SDK_PERMISSION_APPROVED, SDK_PERMISSION_DENIED,
@@ -429,6 +430,7 @@ async fn stream_chat(
                         &state_clone.db,
                         &thread_id,
                         user_message_index,
+                        Some(&copilot_session_id),
                         &attachment_ids,
                     )
                     .await
@@ -505,47 +507,6 @@ async fn stream_chat(
 
 const SELECTION_CONTEXT_RADIUS_CHARS: usize = 220;
 
-struct SelectionContextExcerpt {
-    before: String,
-    after: String,
-    before_truncated: bool,
-    after_truncated: bool,
-}
-
-fn char_offset_to_byte_index(input: &str, char_offset: usize) -> usize {
-    input
-        .char_indices()
-        .nth(char_offset)
-        .map(|(index, _)| index)
-        .unwrap_or(input.len())
-}
-
-fn slice_char_range(input: &str, start: usize, end: usize) -> &str {
-    let byte_start = char_offset_to_byte_index(input, start);
-    let byte_end = char_offset_to_byte_index(input, end);
-    &input[byte_start..byte_end]
-}
-
-fn build_selection_context_excerpt(
-    input: &str,
-    start: usize,
-    end: usize,
-    radius: usize,
-) -> SelectionContextExcerpt {
-    let char_count = input.chars().count();
-    let clamped_start = start.min(char_count);
-    let clamped_end = end.min(char_count).max(clamped_start);
-    let before_start = clamped_start.saturating_sub(radius);
-    let after_end = (clamped_end + radius).min(char_count);
-
-    SelectionContextExcerpt {
-        before: slice_char_range(input, before_start, clamped_start).to_string(),
-        after: slice_char_range(input, clamped_end, after_end).to_string(),
-        before_truncated: before_start > 0,
-        after_truncated: after_end < char_count,
-    }
-}
-
 fn render_context_edge(
     text: &str,
     truncated_start: bool,
@@ -570,6 +531,35 @@ fn build_prompt_text(prompt: &str, canvas: Option<&CanvasPromptContext>) -> Stri
 
 fn canvas_update_sync_open_state() -> Option<bool> {
     Some(true)
+}
+
+fn canvas_content_update_from_request<'a>(
+    args: &'a CanvasUpdateToolArgs,
+    canvas_context: Option<&'a CanvasPromptContext>,
+) -> anyhow::Result<canvas_store::CanvasContentUpdate<'a>> {
+    if args.selection_replace.unwrap_or(false) {
+        let canvas_context =
+            canvas_context.context("selectionReplace requires an active canvas context")?;
+        let selection = canvas_context
+            .selection
+            .as_ref()
+            .context("selectionReplace requires an active selection")?;
+        let current_content = canvas_context
+            .current_content
+            .as_deref()
+            .context("selectionReplace requires the current canvas content")?;
+        Ok(canvas_store::CanvasContentUpdate::SelectionReplace(
+            canvas_store::SelectionReplaceInput {
+                expected_current_content: current_content,
+                start_utf16: selection.start,
+                end_utf16: selection.end,
+                selected_text: &selection.text,
+                replacement: &args.content,
+            },
+        ))
+    } else {
+        Ok(canvas_store::CanvasContentUpdate::Full(&args.content))
+    }
 }
 
 fn build_canvas_prompt(prompt: &str, canvas: Option<&CanvasPromptContext>) -> String {
@@ -602,18 +592,26 @@ User request:\n{prompt}"
                     selection.end,
                     SELECTION_CONTEXT_RADIUS_CHARS,
                 );
-                let before_context = render_context_edge(
-                    &local_context.before,
-                    local_context.before_truncated,
-                    false,
-                    "(start of document)",
-                );
-                let after_context = render_context_edge(
-                    &local_context.after,
-                    false,
-                    local_context.after_truncated,
-                    "(end of document)",
-                );
+                let (before_context, after_context) = match local_context {
+                    Ok(local_context) => (
+                        render_context_edge(
+                            &local_context.before,
+                            local_context.before_truncated,
+                            false,
+                            "(start of document)",
+                        ),
+                        render_context_edge(
+                            &local_context.after,
+                            false,
+                            local_context.after_truncated,
+                            "(end of document)",
+                        ),
+                    ),
+                    Err(_) => (
+                        "(selection context unavailable)".to_string(),
+                        "(selection context unavailable)".to_string(),
+                    ),
+                };
 
                 format!(
                     "The user wants to edit the selected portion of a {kind} canvas titled \"{title}\"{identifier}.\n\
@@ -621,7 +619,7 @@ User request:\n{prompt}"
                     Immediate surrounding context for the selected range:\n<<<BEFORE\n{before_context}\nBEFORE\n\
                     <<<SELECTION\n{selection_text}\nSELECTION\n\
                     <<<AFTER\n{after_context}\nAFTER\n\n\
-                    Selected range (character offsets {start}–{end}).\n\n\
+                    Selected range (UTF-16 offsets {start}–{end}).\n\n\
                     IMPORTANT: Treat the current canvas content as the source of truth for tone, formatting, markdown structure, indentation, heading/list/code conventions, and surrounding context unless the user explicitly asks to change them.\n\
                     IMPORTANT: Call `canvas_update` with `selectionReplace: true` and set `content` to ONLY the replacement text for the selected range. Your replacement must fit seamlessly between the BEFORE and AFTER context. \
                     Do not close the canvas as part of this update; the edited canvas should remain open after the tool call.\n\
@@ -927,6 +925,7 @@ async fn process_event(
                     tx,
                     thread_id,
                     source_user_message_index,
+                    session_id,
                     canvas_context,
                     &request,
                 )
@@ -981,13 +980,21 @@ async fn handle_canvas_tool_call(
     tx: &mpsc::Sender<Result<Event, Infallible>>,
     thread_id: &str,
     source_user_message_index: Option<usize>,
+    source_copilot_session_id: &str,
     canvas_context: Option<&CanvasPromptContext>,
     request: &PendingToolCallRequest,
 ) {
     let result = match request.tool_name.as_str() {
         "canvas.create" | "canvas_create" => {
-            handle_canvas_create_tool(state, tx, thread_id, source_user_message_index, request)
-                .await
+            handle_canvas_create_tool(
+                state,
+                tx,
+                thread_id,
+                source_user_message_index,
+                source_copilot_session_id,
+                request,
+            )
+            .await
         }
         "canvas.update" | "canvas_update" => {
             handle_canvas_update_tool(
@@ -995,6 +1002,7 @@ async fn handle_canvas_tool_call(
                 tx,
                 thread_id,
                 source_user_message_index,
+                source_copilot_session_id,
                 canvas_context,
                 request,
             )
@@ -1037,6 +1045,7 @@ async fn handle_canvas_create_tool(
     tx: &mpsc::Sender<Result<Event, Infallible>>,
     thread_id: &str,
     source_user_message_index: Option<usize>,
+    source_copilot_session_id: &str,
     request: &PendingToolCallRequest,
 ) -> anyhow::Result<serde_json::Value> {
     let args: CanvasCreateToolArgs = serde_json::from_value(request.arguments.clone())?;
@@ -1049,6 +1058,7 @@ async fn handle_canvas_create_tool(
         &kind,
         &args.content,
         source_user_message_index,
+        Some(source_copilot_session_id),
     )
     .await?;
     emit_canvas_sync(
@@ -1070,6 +1080,7 @@ async fn handle_canvas_update_tool(
     tx: &mpsc::Sender<Result<Event, Infallible>>,
     thread_id: &str,
     source_user_message_index: Option<usize>,
+    source_copilot_session_id: &str,
     canvas_context: Option<&CanvasPromptContext>,
     request: &PendingToolCallRequest,
 ) -> anyhow::Result<serde_json::Value> {
@@ -1085,41 +1096,16 @@ async fn handle_canvas_update_tool(
         .map(canvas_store::normalize_canvas_title)
         .transpose()?;
 
-    // Determine final content: inline splice vs full replacement
-    let final_content = if args.selection_replace.unwrap_or(false) {
-        if let Some(sel) = canvas_context.and_then(|c| c.selection.as_ref()) {
-            if let Some(base) = canvas_context.and_then(|c| c.current_content.as_deref()) {
-                let char_count = base.chars().count();
-                let start = sel.start.min(char_count);
-                let end = sel.end.min(char_count).max(start);
-                // Convert char offsets to byte offsets for string slicing
-                let byte_start = char_offset_to_byte_index(base, start);
-                let byte_end = char_offset_to_byte_index(base, end);
-                format!(
-                    "{}{}{}",
-                    &base[..byte_start],
-                    args.content,
-                    &base[byte_end..]
-                )
-            } else {
-                // No base content available — fall back to full replacement
-                args.content.clone()
-            }
-        } else {
-            // selectionReplace=true but no selection context — fall back to full replacement
-            args.content.clone()
-        }
-    } else {
-        args.content.clone()
-    };
+    let content_update = Some(canvas_content_update_from_request(&args, canvas_context)?);
 
     let canvas = canvas_store::update_canvas(
         &state.db,
         thread_id,
         canvas_id,
         normalized_title.as_deref(),
-        Some(&final_content),
+        content_update,
         source_user_message_index,
+        Some(source_copilot_session_id),
     )
     .await?
     .with_context(|| format!("Canvas {canvas_id} was not found"))?;
@@ -1391,16 +1377,17 @@ fn extract_usage_from_event(data: &serde_json::Value) -> Option<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        build_canvas_prompt, build_selection_context_excerpt, canvas_update_sync_open_state,
-        CanvasPromptContext, CanvasSelectionInput,
+        build_canvas_prompt, canvas_content_update_from_request, canvas_update_sync_open_state,
+        CanvasPromptContext, CanvasSelectionInput, CanvasUpdateToolArgs,
     };
+    use crate::canvas_selection::build_selection_context_excerpt;
 
-    fn char_range_for(content: &str, selected: &str) -> (usize, usize) {
+    fn utf16_range_for(content: &str, selected: &str) -> (usize, usize) {
         let byte_start = content
             .find(selected)
             .expect("selected text should exist in the content");
-        let start = content[..byte_start].chars().count();
-        let end = start + selected.chars().count();
+        let start = content[..byte_start].encode_utf16().count();
+        let end = start + selected.encode_utf16().count();
         (start, end)
     }
 
@@ -1408,7 +1395,7 @@ mod tests {
     fn selection_update_prompt_keeps_full_document_and_style_guidance() {
         let current_content = "## Shopping list\n\n- apples\n- bananas\n- carrots\n";
         let selected_text = "- bananas";
-        let (start, end) = char_range_for(current_content, selected_text);
+        let (start, end) = utf16_range_for(current_content, selected_text);
         let canvas = CanvasPromptContext {
             mode: "update".to_string(),
             canvas_id: Some("canvas-1".to_string()),
@@ -1429,17 +1416,83 @@ mod tests {
         assert!(prompt.contains("Treat the current canvas content as the source of truth"));
         assert!(prompt.contains("fit seamlessly between the BEFORE and AFTER context"));
         assert!(prompt.contains("ONLY the replacement text for the selected range"));
+        assert!(prompt.contains("Selected range (UTF-16 offsets"));
         assert!(prompt.contains("should remain open after the tool call"));
     }
 
     #[test]
-    fn selection_context_excerpt_uses_character_offsets() {
-        let excerpt = build_selection_context_excerpt("aa🙂bbccdd", 2, 4, 2);
+    fn selection_context_excerpt_uses_utf16_offsets() {
+        let excerpt = build_selection_context_excerpt("aa🙂bbccdd", 2, 4, 2).unwrap();
 
         assert_eq!(excerpt.before, "aa");
-        assert_eq!(excerpt.after, "bc");
+        assert_eq!(excerpt.after, "bb");
         assert!(!excerpt.before_truncated);
         assert!(excerpt.after_truncated);
+    }
+
+    #[test]
+    fn selection_replace_requires_an_active_canvas_context() {
+        let args = CanvasUpdateToolArgs {
+            canvas_id: Some("canvas-1".to_string()),
+            title: None,
+            content: "replacement".to_string(),
+            selection_replace: Some(true),
+        };
+
+        let error = canvas_content_update_from_request(&args, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("selectionReplace requires an active canvas context"));
+    }
+
+    #[test]
+    fn selection_replace_requires_current_canvas_content() {
+        let args = CanvasUpdateToolArgs {
+            canvas_id: Some("canvas-1".to_string()),
+            title: None,
+            content: "replacement".to_string(),
+            selection_replace: Some(true),
+        };
+        let canvas = CanvasPromptContext {
+            mode: "update".to_string(),
+            canvas_id: Some("canvas-1".to_string()),
+            title: Some("Shopping".to_string()),
+            kind: Some("document".to_string()),
+            current_content: None,
+            selection: Some(CanvasSelectionInput {
+                start: 0,
+                end: 4,
+                text: "text".to_string(),
+            }),
+        };
+
+        let error = canvas_content_update_from_request(&args, Some(&canvas)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("selectionReplace requires the current canvas content"));
+    }
+
+    #[test]
+    fn selection_replace_requires_an_active_selection() {
+        let args = CanvasUpdateToolArgs {
+            canvas_id: Some("canvas-1".to_string()),
+            title: None,
+            content: "replacement".to_string(),
+            selection_replace: Some(true),
+        };
+        let canvas = CanvasPromptContext {
+            mode: "update".to_string(),
+            canvas_id: Some("canvas-1".to_string()),
+            title: Some("Shopping".to_string()),
+            kind: Some("document".to_string()),
+            current_content: Some("text".to_string()),
+            selection: None,
+        };
+
+        let error = canvas_content_update_from_request(&args, Some(&canvas)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("selectionReplace requires an active selection"));
     }
 
     #[test]

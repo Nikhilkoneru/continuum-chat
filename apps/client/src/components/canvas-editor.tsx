@@ -73,6 +73,23 @@ const getCanvasSelection = (state: EditorState): CanvasSelection | null => {
 const areSelectionsEqual = (left: CanvasSelection | null, right: CanvasSelection | null) =>
   left?.start === right?.start && left?.end === right?.end && left?.text === right?.text;
 
+const getRenderableSelection = (selection: CanvasSelection | null, content: string) => {
+  if (!selection) {
+    return null;
+  }
+
+  if (
+    selection.start < 0 ||
+    selection.end > content.length ||
+    selection.start >= selection.end ||
+    content.slice(selection.start, selection.end) !== selection.text
+  ) {
+    return null;
+  }
+
+  return selection;
+};
+
 function SendSelectionIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -111,6 +128,7 @@ export function CanvasEditor({
     onContentChange,
     onSelectionChange,
   };
+  const renderableSelection = useMemo(() => getRenderableSelection(selection, content), [content, selection]);
 
   const updateComposerPosition = useCallback((view: EditorView, nextSelection: CanvasSelection | null) => {
     const surface = surfaceRef.current;
@@ -184,15 +202,15 @@ export function CanvasEditor({
     const view = new EditorView({
       state: EditorState.create({
         doc: content,
-        selection: selection ? EditorSelection.range(selection.start, selection.end) : undefined,
+        selection: renderableSelection ? EditorSelection.range(renderableSelection.start, renderableSelection.end) : undefined,
         extensions,
       }),
       parent: host,
     });
 
     editorViewRef.current = view;
-    lastSelectionRef.current = selection;
-    updateComposerPosition(view, selection);
+    lastSelectionRef.current = renderableSelection;
+    updateComposerPosition(view, renderableSelection);
 
     const handleViewportChange = () => updateComposerPosition(view, getCanvasSelection(view.state));
     view.scrollDOM.addEventListener('scroll', handleViewportChange);
@@ -245,34 +263,41 @@ export function CanvasEditor({
           text: view.state.doc.sliceString(Math.min(main.from, main.to), Math.max(main.from, main.to)),
         };
 
-    if (areSelectionsEqual(currentSelection, selection)) {
-      updateComposerPosition(view, selection);
+    if (selection && !renderableSelection) {
+      updateComposerPosition(view, null);
+      return;
+    }
+
+    if (areSelectionsEqual(currentSelection, renderableSelection)) {
+      updateComposerPosition(view, renderableSelection);
       return;
     }
 
     suppressEditorEventsRef.current = true;
     view.dispatch({
-      selection: selection ? EditorSelection.range(selection.start, selection.end) : EditorSelection.cursor(main.head),
-      scrollIntoView: Boolean(selection),
+      selection: renderableSelection
+        ? EditorSelection.range(renderableSelection.start, renderableSelection.end)
+        : EditorSelection.cursor(main.head),
+      scrollIntoView: Boolean(renderableSelection),
     });
     suppressEditorEventsRef.current = false;
 
-    lastSelectionRef.current = selection;
-    updateComposerPosition(view, selection);
-  }, [selection, updateComposerPosition]);
+    lastSelectionRef.current = renderableSelection;
+    updateComposerPosition(view, renderableSelection);
+  }, [renderableSelection, selection, updateComposerPosition]);
 
   useEffect(() => {
-    if (!selection || !inlineComposerPosition) {
+    if (!renderableSelection || !inlineComposerPosition) {
       return;
     }
 
     requestAnimationFrame(() => {
       selectionPromptRef.current?.focus();
     });
-  }, [inlineComposerPosition, selection]);
+  }, [inlineComposerPosition, renderableSelection]);
 
   useEffect(() => {
-    if (!selection) {
+    if (!renderableSelection) {
       return undefined;
     }
 
@@ -291,7 +316,7 @@ export function CanvasEditor({
 
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [onClearSelection, selection]);
+  }, [onClearSelection, renderableSelection]);
 
   const inlineComposerStyle: CSSProperties | undefined = inlineComposerPosition
     ? {
@@ -305,7 +330,7 @@ export function CanvasEditor({
     <div ref={surfaceRef} className="canvas-editor-surface">
       <div ref={editorHostRef} className={editorShellClassName} aria-label={`Editing ${canvas.title}`} />
 
-      {selection && inlineComposerStyle ? (
+      {renderableSelection && inlineComposerStyle ? (
         <div
           ref={selectionComposerRef}
           className="canvas-selection-inline"

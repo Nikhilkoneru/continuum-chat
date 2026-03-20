@@ -14,6 +14,7 @@ export type ThreadCanvasWorkspaceState = {
   canvases: CanvasArtifact[];
   activeCanvasId: string | null;
   isPaneOpen: boolean;
+  manualPaneCloseCanvasIds: string[] | null;
   editorSessions: Record<string, CanvasEditorSessionState>;
 };
 
@@ -23,6 +24,11 @@ type CanvasSyncPayload = {
   canvases: CanvasArtifact[];
   activeCanvasId?: string | null;
   open?: boolean;
+};
+
+type UpsertCanvasOptions = {
+  activate?: boolean;
+  preservePaneState?: boolean;
 };
 
 type WorkspaceStore = {
@@ -35,13 +41,14 @@ type WorkspaceStore = {
   setIsNarrowViewport: (isNarrow: boolean) => void;
   resetWorkspace: () => void;
   replaceThreadCanvases: (threadId: string, canvases: CanvasArtifact[]) => void;
-  upsertCanvasForThread: (threadId: string, canvas: CanvasArtifact) => void;
+  upsertCanvasForThread: (threadId: string, canvas: CanvasArtifact, options?: UpsertCanvasOptions) => void;
   patchCanvasForThread: (
     threadId: string,
     canvasId: string,
     patch: Partial<Pick<CanvasArtifact, 'title' | 'content' | 'updatedAt'>>,
   ) => void;
   applyCanvasSync: (threadId: string, payload: CanvasSyncPayload) => void;
+  allowRemoteCanvasOpen: (threadId: string) => void;
   openCanvas: (threadId: string, canvasId?: string | null) => void;
   closeCanvas: (threadId: string) => void;
   setActiveCanvas: (threadId: string, canvasId: string | null) => void;
@@ -70,6 +77,7 @@ export const INITIAL_THREAD_CANVAS_STATE: Readonly<ThreadCanvasWorkspaceState> =
   canvases: [],
   activeCanvasId: null,
   isPaneOpen: false,
+  manualPaneCloseCanvasIds: null,
   editorSessions: {},
 });
 
@@ -77,6 +85,7 @@ const createThreadCanvasState = (): ThreadCanvasWorkspaceState => ({
   canvases: [],
   activeCanvasId: null,
   isPaneOpen: false,
+  manualPaneCloseCanvasIds: null,
   editorSessions: {},
 });
 
@@ -128,27 +137,59 @@ const normalizeEditorSessions = (
   canvases: CanvasArtifact[],
   options?: {
     consumePendingRemoteApply?: boolean;
+    contentResetCanvasIds?: ReadonlySet<string>;
   },
 ) => {
   const consumePendingRemoteApply = options?.consumePendingRemoteApply ?? false;
   return Object.fromEntries(
     canvases.map((canvas) => {
       const current = currentSessions[canvas.id] ?? createCanvasEditorSessionState();
+      const shouldResetContentState = options?.contentResetCanvasIds?.has(canvas.id) ?? false;
 
       if (consumePendingRemoteApply && current.pendingRemoteApply) {
         return [canvas.id, createCanvasEditorSessionState()];
       }
 
+      const draftContent = shouldResetContentState ? null : current.draftContent === canvas.content ? null : current.draftContent;
+      const visibleContent = draftContent ?? canvas.content;
+      const hasValidSelection =
+        current.selection !== null &&
+        current.selection.start >= 0 &&
+        current.selection.end <= visibleContent.length &&
+        current.selection.start < current.selection.end &&
+        visibleContent.slice(current.selection.start, current.selection.end) === current.selection.text;
+
       return [
         canvas.id,
         {
           ...current,
-          draftContent: current.draftContent === canvas.content ? null : current.draftContent,
+          draftContent,
+          selection: hasValidSelection ? current.selection : null,
+          selectionPromptDraft: hasValidSelection ? current.selectionPromptDraft : '',
           pendingRemoteApply: consumePendingRemoteApply ? false : current.pendingRemoteApply,
         },
       ];
     }),
   );
+};
+
+const getContentResetCanvasIds = (currentCanvases: CanvasArtifact[], nextCanvases: CanvasArtifact[]) => {
+  const currentById = new Map(currentCanvases.map((canvas) => [canvas.id, canvas]));
+  return new Set(
+    nextCanvases.flatMap((canvas) => {
+      const current = currentById.get(canvas.id);
+      return current && current.content !== canvas.content ? [canvas.id] : [];
+    }),
+  );
+};
+
+const hasCanvasOutsideSnapshot = (canvases: CanvasArtifact[], snapshotIds: string[] | null) => {
+  if (snapshotIds === null) {
+    return false;
+  }
+
+  const snapshotIdSet = new Set(snapshotIds);
+  return canvases.some((canvas) => !snapshotIdSet.has(canvas.id));
 };
 
 const nextThreadState = (
@@ -158,11 +199,14 @@ const nextThreadState = (
   isPaneOpen: boolean,
   options?: {
     consumePendingRemoteApply?: boolean;
+    contentResetCanvasIds?: ReadonlySet<string>;
+    manualPaneCloseCanvasIds?: string[] | null;
   },
 ): ThreadCanvasWorkspaceState => ({
   canvases,
   activeCanvasId,
   isPaneOpen: canvases.length > 0 ? isPaneOpen : false,
+  manualPaneCloseCanvasIds: canvases.length > 0 ? (options?.manualPaneCloseCanvasIds ?? current.manualPaneCloseCanvasIds) : null,
   editorSessions: normalizeEditorSessions(current.editorSessions, canvases, options),
 });
 
@@ -192,7 +236,11 @@ const workspaceStore = createStore<WorkspaceStore>()((set) => ({
   composerDraft: '',
   isNarrowViewport: false,
   threads: {},
-  setSelectedChatId: (chatId) => set({ selectedChatId: chatId }),
+  setSelectedChatId: (chatId) =>
+    set((state) => ({
+      selectedChatId: chatId,
+      composerDraft: state.selectedChatId === chatId ? state.composerDraft : '',
+    })),
   setComposerDraft: (draft) => set({ composerDraft: draft }),
   setIsNarrowViewport: (isNarrow) => set({ isNarrowViewport: isNarrow }),
   resetWorkspace: () =>
@@ -207,17 +255,28 @@ const workspaceStore = createStore<WorkspaceStore>()((set) => ({
       threads: updateThreadState(state.threads, threadId, (current) => {
         const canvases = mergeCanvasOrder(current.canvases, incomingCanvases);
         const activeCanvasId = resolveActiveCanvasId(canvases, current.activeCanvasId);
-        return nextThreadState(current, canvases, activeCanvasId, current.isPaneOpen);
+        return nextThreadState(current, canvases, activeCanvasId, current.isPaneOpen, {
+          contentResetCanvasIds: getContentResetCanvasIds(current.canvases, incomingCanvases),
+        });
       }),
     })),
-  upsertCanvasForThread: (threadId, canvas) =>
+  upsertCanvasForThread: (threadId, canvas, options) =>
     set((state) => ({
       threads: updateThreadState(state.threads, threadId, (current) => {
         const canvases = current.canvases.some((item) => item.id === canvas.id)
           ? current.canvases.map((item) => (item.id === canvas.id ? canvas : item))
           : [canvas, ...current.canvases];
-        const activeCanvasId = resolveActiveCanvasId(canvases, current.activeCanvasId, canvas.id);
-        return nextThreadState(current, canvases, activeCanvasId, current.isPaneOpen || current.canvases.length === 0);
+        const activeCanvasId = resolveActiveCanvasId(
+          canvases,
+          current.activeCanvasId,
+          options?.activate === false ? undefined : canvas.id,
+        );
+        return nextThreadState(
+          current,
+          canvases,
+          activeCanvasId,
+          options?.preservePaneState ? current.isPaneOpen : current.isPaneOpen || current.canvases.length === 0,
+        );
       }),
     })),
   patchCanvasForThread: (threadId, canvasId, patch) =>
@@ -232,29 +291,57 @@ const workspaceStore = createStore<WorkspaceStore>()((set) => ({
     set((state) => ({
       threads: updateThreadState(state.threads, threadId, (current) => {
         const canvases = mergeCanvasOrder(current.canvases, payload.canvases);
-        const activeCanvasId = resolveActiveCanvasId(canvases, current.activeCanvasId, payload.activeCanvasId);
-        const isPaneOpen = payload.open ?? current.isPaneOpen;
+        const shouldHonorRemoteOpen =
+          payload.open !== true ||
+          current.manualPaneCloseCanvasIds === null ||
+          hasCanvasOutsideSnapshot(payload.canvases, current.manualPaneCloseCanvasIds);
+        const activeCanvasId = resolveActiveCanvasId(
+          canvases,
+          current.activeCanvasId,
+          payload.open === true && !shouldHonorRemoteOpen ? undefined : payload.activeCanvasId,
+        );
+        const isPaneOpen =
+          payload.open === undefined ? current.isPaneOpen : payload.open ? (shouldHonorRemoteOpen ? true : current.isPaneOpen) : false;
         return nextThreadState(current, canvases, activeCanvasId, isPaneOpen, {
           consumePendingRemoteApply: true,
+          contentResetCanvasIds: getContentResetCanvasIds(current.canvases, payload.canvases),
+          manualPaneCloseCanvasIds: payload.open === true && shouldHonorRemoteOpen ? null : current.manualPaneCloseCanvasIds,
         });
       }),
+    })),
+  allowRemoteCanvasOpen: (threadId) =>
+    set((state) => ({
+      threads: updateThreadState(state.threads, threadId, (current) =>
+        current.manualPaneCloseCanvasIds === null
+          ? current
+          : nextThreadState(current, current.canvases, current.activeCanvasId, current.isPaneOpen, {
+              manualPaneCloseCanvasIds: null,
+            }),
+      ),
     })),
   openCanvas: (threadId, requestedCanvasId) =>
     set((state) => ({
       threads: updateThreadState(state.threads, threadId, (current) => {
         const activeCanvasId = resolveActiveCanvasId(current.canvases, current.activeCanvasId, requestedCanvasId);
-        return nextThreadState(current, current.canvases, activeCanvasId, true);
+        return nextThreadState(current, current.canvases, activeCanvasId, true, {
+          manualPaneCloseCanvasIds: null,
+        });
       }),
     })),
   closeCanvas: (threadId) =>
     set((state) => ({
       threads: updateThreadState(state.threads, threadId, (current) => {
+        const manualPaneCloseCanvasIds = current.canvases.map((canvas) => canvas.id);
         if (!current.activeCanvasId) {
-          return nextThreadState(current, current.canvases, current.activeCanvasId, false);
+          return nextThreadState(current, current.canvases, current.activeCanvasId, false, {
+            manualPaneCloseCanvasIds,
+          });
         }
 
         return {
-          ...nextThreadState(current, current.canvases, current.activeCanvasId, false),
+          ...nextThreadState(current, current.canvases, current.activeCanvasId, false, {
+            manualPaneCloseCanvasIds,
+          }),
           editorSessions: {
             ...normalizeEditorSessions(current.editorSessions, current.canvases),
             [current.activeCanvasId]: {
@@ -351,3 +438,5 @@ export const useWorkspaceStore = <T,>(selector: (state: WorkspaceStore) => T) =>
     () => selector(workspaceStore.getState()),
     () => selector(workspaceStore.getState()),
   );
+
+export const getWorkspaceStoreState = () => workspaceStore.getState();

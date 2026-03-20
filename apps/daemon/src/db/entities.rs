@@ -379,7 +379,9 @@ pub mod canvases {
         pub kind: String,
         pub content: String,
         pub created_by_user_message_index: Option<i64>,
+        pub created_by_copilot_session_id: Option<String>,
         pub last_updated_by_user_message_index: Option<i64>,
+        pub last_updated_by_copilot_session_id: Option<String>,
         pub created_at: String,
         pub updated_at: String,
     }
@@ -426,6 +428,7 @@ pub mod canvas_revisions {
         pub content: String,
         pub created_at: String,
         pub source_user_message_index: Option<i64>,
+        pub source_copilot_session_id: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -459,6 +462,7 @@ pub mod message_attachment_sets {
         pub id: String,
         pub thread_id: String,
         pub user_message_index: i64,
+        pub copilot_session_id: Option<String>,
         pub created_at: String,
     }
 

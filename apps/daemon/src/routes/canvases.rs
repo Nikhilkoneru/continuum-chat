@@ -71,6 +71,7 @@ async fn create(
         &kind,
         body.content.as_deref().unwrap_or(""),
         body.source_user_message_index,
+        None,
     )
     .await
     .map_err(|error| AppError::Internal(error.to_string()))?;
@@ -110,8 +111,11 @@ async fn update(
         &thread_id,
         &canvas_id,
         body.title.as_deref().map(str::trim),
-        body.content.as_deref(),
+        body.content
+            .as_deref()
+            .map(canvas_store::CanvasContentUpdate::Full),
         body.source_user_message_index,
+        None,
     )
     .await
     .map_err(|error| AppError::Internal(error.to_string()))?

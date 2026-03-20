@@ -1,4 +1,5 @@
 mod auth_middleware;
+mod canvas_selection;
 mod config;
 mod copilot;
 mod db;

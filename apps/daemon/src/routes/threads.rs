@@ -114,14 +114,13 @@ async fn list(
     axum::extract::Query(query): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session(&headers, &state.db, &state.config).await?;
-    let threads =
-        thread_store::list_threads(
-            &state.db,
-            &state.config,
-            &session.user_id,
-            query.project_id.as_deref(),
-        )
-            .await?;
+    let threads = thread_store::list_threads(
+        &state.db,
+        &state.config,
+        &session.user_id,
+        query.project_id.as_deref(),
+    )
+    .await?;
     Ok(Json(json!({ "threads": threads })))
 }
 
@@ -323,7 +322,9 @@ async fn load_thread_messages(
         .await
     {
         Ok(_) => {}
-        Err(error) if crate::copilot::sdk_client::SdkConnection::is_resettable_session_error(&error) => {
+        Err(error)
+            if crate::copilot::sdk_client::SdkConnection::is_resettable_session_error(&error) =>
+        {
             tracing::warn!(
                 "Stored Copilot session {} for thread {} can no longer be resumed; clearing it.",
                 copilot_session_id,
@@ -338,7 +339,12 @@ async fn load_thread_messages(
         Ok(messages) => messages,
         Err(error) => return Err(error),
     };
-    let attachment_sets = attachment_store::list_message_attachments(&state.db, &thread.id).await?;
+    let attachment_sets = attachment_store::list_message_attachments(
+        &state.db,
+        &thread.id,
+        thread.copilot_session_id.as_deref(),
+    )
+    .await?;
 
     Ok(replayed_messages_to_chat_messages(
         &replayed_messages,

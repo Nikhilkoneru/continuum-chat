@@ -371,12 +371,16 @@ export const updateCanvas = (
     sourceUserMessageIndex?: number;
   },
   sessionToken?: string,
+  options?: {
+    signal?: AbortSignal;
+  },
 ) =>
   fetchJson<{ canvas: CanvasArtifact }>(
     `/api/threads/${threadId}/canvases/${canvasId}`,
     {
       method: 'PATCH',
       body: JSON.stringify(payload),
+      signal: options?.signal,
     },
     sessionToken,
   );
